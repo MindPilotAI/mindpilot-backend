@@ -1,0 +1,851 @@
+import os
+import re
+import textwrap
+from urllib.parse import urlparse, parse_qs
+
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+
+from mindpilot_llm_client import run_mindpilot_analysis
+
+
+
+# ---------- CONFIG ----------
+
+TRANSCRIPT_FILE = "mindpilot_transcript_output.txt"
+PROMPT_PACK_FILE = "mindpilot_prompt_pack.md"
+MAX_CHARS_PER_CHUNK = 1200  # tweak if you want bigger/smaller chunks
+
+
+# ---------- YOUTUBE HELPERS ----------
+
+def extract_video_id(youtube_url: str) -> str:
+    """
+    Extracts the YouTube video ID from various URL formats.
+    Examples:
+    - https://www.youtube.com/watch?v=VIDEOID
+    - https://youtu.be/VIDEOID
+    """
+    parsed = urlparse(youtube_url)
+
+    # Case 1: standard watch URL
+    if parsed.hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        query = parse_qs(parsed.query)
+        if "v" in query:
+            return query["v"][0]
+
+    # Case 2: shortened youtu.be URL
+    if parsed.hostname == "youtu.be":
+        return parsed.path.lstrip("/")
+
+    # Fallback: try to pull a video-like ID via regex
+    match = re.search(r"v=([a-zA-Z0-9_-]{11})", youtube_url)
+    if match:
+        return match.group(1)
+
+    raise ValueError(f"Could not extract video ID from URL: {youtube_url}")
+
+
+def fetch_transcript_text(video_id: str) -> str:
+    """
+    Fetches the transcript for a given video ID and returns it as one combined string.
+    Uses the modern YouTubeTranscriptApi().fetch(...) interface.
+    """
+    api = YouTubeTranscriptApi()
+
+    try:
+        fetched = api.fetch(video_id, languages=['en'])
+        raw_chunks = fetched.to_raw_data()
+    except TranscriptsDisabled:
+        raise RuntimeError("Transcripts are disabled for this video.")
+    except NoTranscriptFound:
+        raise RuntimeError("No transcript found for this video.")
+    except Exception as e:
+        raise RuntimeError(f"Unexpected error fetching transcript: {e}")
+
+    full_text = " ".join(chunk.get("text", "") for chunk in raw_chunks)
+    full_text = re.sub(r"\s+", " ", full_text).strip()
+    return full_text
+
+
+def save_text_to_file(text: str, output_path: str) -> None:
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+# ---------- CHUNKING & PROMPT GENERATION ----------
+
+def load_transcript(path: str) -> str:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Transcript file not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+    if not text:
+        raise ValueError("Transcript file is empty.")
+    return text
+
+
+def chunk_text(text: str, max_chars: int):
+    """
+    Naive but effective: split on sentence-ish boundaries while trying
+    to keep each chunk under max_chars.
+    """
+    sentences = []
+    # Very rough sentence split
+    for piece in text.replace("?", "?.").replace("!", "!.").split("."):
+        piece = piece.strip()
+        if not piece:
+            continue
+        sentences.append(piece + ".")
+
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) + 1 > max_chars:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += " " + sentence
+            else:
+                current_chunk = sentence
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
+def build_chunk_prompt(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
+    """
+    Build a MindPilot-style reasoning analysis prompt for a single chunk.
+    Focus: fallacies, biases, persuasion, manipulation (F/B/R/M domains).
+    """
+    header = f"## Chunk {chunk_index + 1} of {total_chunks}\n"
+
+    wrapped_chunk = textwrap.fill(chunk_text, width=100)
+
+    prompt = f"""
+You are **MindPilot**, a neutral reasoning-analysis copilot.
+
+Your job is to analyze this transcript chunk for:
+- Logical fallacies (F domain)
+- Cognitive biases (B domain)
+- Rhetorical / persuasion tactics (R domain)
+- Manipulative or psychological conditioning patterns (M domain)
+
+Use the following approach:
+
+**Transcript chunk (verbatim):**
+\"\"\"TEXT_START
+{wrapped_chunk}
+TEXT_END\"\"\"
+
+Now produce the following sections in clean Markdown:
+
+1. **Argument Map**
+   - Bullet list of the main claims and the key reasons/premises in your own words.
+   - Note any important assumptions that are taken for granted.
+
+2. **Logical Fallacies (F)**
+   - For each fallacy you detect, list:
+     - **Name** (e.g., Straw Man, Ad Hominem, Slippery Slope, False Cause, False Dilemma)
+     - **Why it applies** (1–3 sentences, referencing the text)
+     - **Severity**: Low / Medium / High
+   - If none are clear, say: "No clear fallacies detected with high confidence."
+
+3. **Cognitive Biases (B)**
+   - For each bias you detect (e.g., Confirmation Bias, Anchoring, Availability, Dunning–Kruger, Negativity Bias):
+     - Name
+     - Short explanation of how it shows up in this chunk
+     - Severity: Low / Medium / High
+   - If none are clear, say so explicitly.
+
+4. **Rhetorical / Persuasion Tactics (R)**
+   - Identify any persuasion or framing tactics, such as:
+     - Emotional priming, bandwagon, scapegoating, authority appeal, nostalgia, fear appeal, virtue signaling, simplification/slogans, etc.
+   - For each:
+     - Name the tactic
+     - Explain briefly how the language in this chunk uses it.
+
+5. **Manipulative / Conditioning Patterns (M)**
+   - Only include when you see stronger patterns like:
+     - Gaslighting, belief deconstruction, information laundering, astroturfing, weaponized uncertainty, or propaganda-style narrative control.
+   - Be cautious and neutral; if present, describe the pattern and why you suspect it.
+
+6. **Rationality Flight Report**
+   - In 2–4 sentences, summarize how clear, fair, and evidence-based this chunk is.
+   - Provide a simple rating from 1–5 for overall reasoning quality, where:
+     - 5 = very sound, well-supported reasoning
+     - 3 = mixed: some valid reasoning with notable issues
+     - 1 = heavily distorted or manipulative reasoning
+
+Avoid political or ideological judgment. Focus strictly on the structure of arguments, evidence, and language.
+"""
+    return header + "\n" + prompt.strip() + "\n\n---\n\n"
+
+
+def build_global_prompts() -> str:
+    """
+    Global prompts for full-lesson reasoning analysis + condensed report.
+    These are what you'll paste AFTER you have chunk-level outputs.
+    """
+    prompt = """
+# Global MindPilot Reasoning Prompts for This Lesson
+
+Use these AFTER you have generated chunk-level analyses.
+
+---
+
+## 1. Full-Lesson Reasoning Summary
+
+**Prompt:**
+
+"Using all of the chunk-level MindPilot analyses (argument maps, fallacies, biases,
+persuasion tactics, manipulation patterns, rationality ratings), write a coherent
+full-lesson reasoning summary (6–10 paragraphs). Focus on:
+
+- The overall narrative being presented
+- How causal claims are made (strong vs weak)
+- How evidence is (or is not) used
+- How fallacies, biases, and persuasion tactics show up across the whole segment
+- How the reasoning evolves from start to finish."
+
+---
+
+## 2. Master Fallacy & Bias Map
+
+**Prompt:**
+
+"From all chunk-level analyses, build a master map of:
+
+- Logical fallacies (F domain)
+- Cognitive biases (B domain)
+- Rhetorical/persuasion tactics (R domain)
+- Manipulative/conditioning patterns (M domain)
+
+For each category:
+- List the specific types detected
+- Describe how often they appear (Low/Medium/High)
+- Summarize the overall impact on reasoning quality."
+
+---
+
+## 3. Rationality Profile for the Entire Segment
+
+**Prompt:**
+
+"Combine all chunk-level 'Rationality Flight Reports' into a single
+lesson-level rationality profile. Include:
+
+- A 1–2 paragraph overview of reasoning strengths
+- A 1–2 paragraph overview of reasoning weaknesses
+- A table or structured list of key reasoning dimensions
+  (Evidence use, Causal reasoning, Emotional framing, Fairness/balance,
+   Motive attribution, etc.) with 1–5 ratings
+- A final overall reasoning score from 1–5."
+
+---
+
+## 4. Condensed Investor-Facing Summary
+
+**Prompt:**
+
+"Imagine you are MindPilot generating a concise, investor-facing summary
+of this analysis.
+
+In 3–6 short paragraphs, explain:
+
+1. What the content is about (one or two sentences).
+2. What MindPilot detected in terms of reasoning:
+   - Main fallacy/bias patterns
+   - Degree of emotional/persuasive framing
+   - Overall rationality score.
+3. Why this demonstrates the value of MindPilot as a product:
+   - Ability to turn raw media into structured reasoning diagnostics
+   - Potential use cases (media literacy, education, compliance, etc.)
+
+Keep it clear, punchy, and non-technical. Focus on showcasing MindPilot's capabilities."
+"""
+    return prompt.strip() + "\n"
+
+def build_global_summary_prompt(chunk_analyses):
+    """
+    Build a prompt that summarizes all chunk-level MindPilot analyses into
+    a full-lesson reasoning summary, master map, rationality profile, and
+    condensed investor-style summary.
+    """
+    joined_analyses = "\n\n---\n\n".join(
+        f"Chunk {i+1} Analysis:\n{text}"
+        for i, text in enumerate(chunk_analyses)
+    )
+
+    prompt = f"""
+You are MindPilot, a neutral reasoning-analysis copilot.
+
+You have already analyzed several chunks of a single piece of content.
+Below are your chunk-level analyses, including argument maps, fallacies,
+biases, persuasion tactics, manipulation patterns, and rationality ratings.
+
+Use them to build a GLOBAL reasoning report.
+
+Chunk-level analyses:
+\"\"\"TEXT_START
+{joined_analyses}
+TEXT_END\"\"\"
+
+Now produce the following sections in clean Markdown:
+
+1. **Full-Lesson Reasoning Summary (6–10 paragraphs)**
+   - Explain the overall narrative of the content.
+   - Describe how causal claims are made (well-supported vs speculative).
+   - Note how evidence is used or not used.
+   - Summarize how fallacies, biases, and persuasion tactics appear across the whole segment.
+
+2. **Master Fallacy & Bias Map**
+   - List the main logical fallacies (F domain) detected across all chunks.
+   - List the main cognitive biases (B domain).
+   - List key rhetorical/persuasion tactics (R domain).
+   - List any notable manipulative/conditioning patterns (M domain).
+   - For each, briefly describe its role and how often it appears (Low/Medium/High).
+
+3. **Rationality Profile for the Entire Segment**
+   - Create a short overview of reasoning strengths.
+   - Create a short overview of reasoning weaknesses.
+   - Provide a structured list or table of reasoning dimensions
+     (e.g., Evidence use, Causal reasoning, Emotional framing, Fairness/balance,
+     Motive attribution) with ratings from 1–5.
+   - Provide a final overall reasoning score from 1–5.
+
+4. **Condensed Investor-Facing Summary**
+   - In 3–6 short paragraphs, describe:
+     - What the content is about.
+     - What MindPilot found (fallacies/biases/persuasion patterns, rationality level).
+     - Why this demonstrates the value of MindPilot as a product
+       (media literacy, education, compliance, etc.).
+   - Keep it punchy and non-technical, suitable for an investor demo.
+"""
+    return prompt.strip()
+
+def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global_report):
+    """
+    Build a structured HTML report for MindPilot analyses with
+    top-level overview, master fallacy/bias map, and deeper sections.
+    """
+
+    def escape_html(text: str) -> str:
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+        )
+
+    # Try to split the global report into its major sections
+    full_summary = ""
+    master_map = ""
+    rationality_profile = ""
+    investor_summary = ""
+
+    if global_report:
+        raw = global_report
+
+        headings = [
+            ("full", "# 1. Full-Lesson Reasoning Summary"),
+            ("map", "# 2. Master Fallacy & Bias Map"),
+            ("profile", "# 3. Rationality Profile for the Entire Segment"),
+            ("investor", "# 4. Condensed Investor-Facing Summary"),
+        ]
+
+        found = []
+        for key, heading in headings:
+            idx = raw.find(heading)
+            if idx != -1:
+                found.append((key, idx, heading))
+
+        if found:
+            found.sort(key=lambda x: x[1])
+            sections = {}
+            for i, (key, idx, heading) in enumerate(found):
+                start = idx
+                end = found[i+1][1] if i + 1 < len(found) else len(raw)
+                sections[key] = raw[start:end].strip()
+
+            full_summary = sections.get("full", "")
+            master_map = sections.get("map", "")
+            rationality_profile = sections.get("profile", "")
+            investor_summary = sections.get("investor", "")
+
+    # Escape chunk analyses for HTML
+    escaped_chunks = [escape_html(a) for a in chunk_analyses]
+
+    # Escape global sections
+    esc_full = escape_html(full_summary) if full_summary else ""
+    esc_map = escape_html(master_map) if master_map else ""
+    esc_profile = escape_html(rationality_profile) if rationality_profile else ""
+    esc_investor = escape_html(investor_summary) if investor_summary else ""
+    esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MindPilot – Cognitive Flight Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {{
+      --dark-navy: #0B1B33;
+      --sky-blue: #4FD1C5;
+      --soft-bg: #F7FAFC;
+      --card-bg: #FFFFFF;
+      --border-subtle: #E2E8F0;
+      --text-main: #1A202C;
+      --text-muted: #4A5568;
+      --accent-warn: #E53E3E;
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
+    body {{
+      margin: 0;
+      font-family: 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: radial-gradient(circle at top left, #EBF8FF, #F7FAFC 45%, #EDFDFD 100%);
+      color: var(--text-main);
+    }}
+    .page {{
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem 2.5rem;
+    }}
+    header {{
+      margin-bottom: 1.5rem;
+    }}
+    .logo-title {{
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--dark-navy);
+      letter-spacing: 0.02em;
+      margin-bottom: 0.25rem;
+    }}
+    .tagline {{
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }}
+    .section-heading {{
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 1.3rem 0 0.4rem;
+      color: var(--dark-navy);
+    }}
+    .card {{
+      background: var(--card-bg);
+      border-radius: 1.25rem;
+      padding: 1rem 1.2rem;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
+      border-top: 4px solid var(--sky-blue);
+      margin-bottom: 1rem;
+    }}
+    .card-sub {{
+      border-radius: 1rem;
+      border: 1px solid var(--border-subtle);
+      background: var(--card-bg);
+      padding: 0.9rem 1rem;
+      margin-bottom: 0.8rem;
+    }}
+    .card-title {{
+      font-weight: 600;
+      font-size: 0.98rem;
+      margin-bottom: 0.35rem;
+    }}
+    .card-body {{
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }}
+    .pre-block {{
+      font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.84rem;
+      white-space: pre-wrap;         /* wrap lines */
+      word-wrap: break-word;         /* break long words if needed */
+      overflow-x: auto;              /* allow horizontal scroll if a table is too wide */
+      margin: 0;
+      color: var(--text-muted);
+    }}
+    .chunk-card {{
+      border-radius: 1rem;
+      border: 1px solid var(--border-subtle);
+      background: var(--card-bg);
+      margin-bottom: 0.9rem;
+      overflow: hidden;
+    }}
+    .chunk-header {{
+      padding: 0.7rem 0.9rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      background: linear-gradient(90deg, #EDF2F7, #E6FFFA);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--dark-navy);
+    }}
+    .chunk-toggle {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }}
+    .chunk-body {{
+      padding: 0.75rem 0.9rem 0.9rem;
+      border-top: 1px solid var(--border-subtle);
+      display: none;
+    }}
+    .chunk-body.open {{
+      display: block;
+    }}
+    .footer {{
+      margin-top: 2rem;
+      font-size: 0.8rem;
+      color: #A0AEC0;
+      text-align: center;
+    }}
+    .footer-meta {{
+      margin-bottom: 0.6rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }}
+    .footer-meta a {{
+      color: var(--sky-blue);
+      text-decoration: none;
+    }}
+    .footer-meta a:hover {{
+      text-decoration: underline;
+    }}
+    .pill-row {{
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      justify-content: center;
+      margin-top: 0.5rem;
+    }}
+    .pill {{
+      font-size: 0.78rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(79, 209, 197, 0.06);
+      color: var(--text-muted);
+    }}
+    .collapsible-header {{
+      font-size: 0.9rem;
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      color: var(--dark-navy);
+      margin-bottom: 0.35rem;
+    }}
+    .collapsible-body {{
+      display: none;
+    }}
+    .collapsible-body.open {{
+      display: block;
+    }}
+    .collapsible-toggle {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="logo-title">MindPilot Cognitive Flight Report</div>
+      <div class="tagline">Your critical thinking copilot’s readback of this content.</div>
+    </header>
+"""
+
+    # Top-level Rationality Profile card
+    if esc_profile:
+        html += f"""
+    <section class="card">
+      <div class="card-title">Rationality Profile (Overview)</div>
+      <div class="card-body">
+        <pre class="pre-block">{esc_profile}</pre>
+      </div>
+    </section>
+"""
+    elif esc_global_fallback:
+        # Fallback if we couldn't split sections
+        html += f"""
+    <section class="card">
+      <div class="card-title">Global MindPilot Reasoning Overview</div>
+      <div class="card-body">
+        <pre class="pre-block">{esc_global_fallback}</pre>
+      </div>
+    </section>
+"""
+
+    # Disclaimer card between Rationality Profile and Master Map
+    html += """
+    <section class="card-sub">
+      <div class="card-title">How to read this report</div>
+      <div class="card-body">
+        MindPilot is your critical thinking copilot. This analysis highlights patterns in
+        reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
+        so you can reflect more deliberately on what you’re hearing or reading.
+        <br/><br/>
+        <strong>Important:</strong> MindPilot does <em>not</em> act as a fact checker and does
+        <em>not</em> independently verify whether specific claims or statements are true.
+        It focuses on <strong>how</strong> arguments are made, not on adjudicating the
+        real-world accuracy of every assertion.
+      </div>
+    </section>
+"""
+
+    # Master Fallacy & Bias Map card
+    if esc_map:
+        html += f"""
+    <section class="card-sub">
+      <div class="card-title">Master Fallacy &amp; Bias Map</div>
+      <div class="card-body">
+        <pre class="pre-block">{esc_map}</pre>
+      </div>
+    </section>
+"""
+
+    # Full-Lesson Summary (collapsible)
+    if esc_full:
+        html += f"""
+    <section class="card-sub">
+      <div class="collapsible-header" onclick="toggleSection('full-summary')">
+        <span>Full-Lesson Reasoning Summary</span>
+        <span class="collapsible-toggle" id="toggle-full-summary">Show</span>
+      </div>
+      <div class="collapsible-body" id="section-full-summary">
+        <pre class="pre-block">{esc_full}</pre>
+      </div>
+    </section>
+"""
+
+    # Investor-facing summary (collapsible)
+    if esc_investor:
+        html += f"""
+    <section class="card-sub">
+      <div class="collapsible-header" onclick="toggleSection('investor-summary')">
+        <span>Condensed Investor-Facing Summary</span>
+        <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+      </div>
+      <div class="collapsible-body" id="section-investor-summary">
+        <pre class="pre-block">{esc_investor}</pre>
+      </div>
+    </section>
+"""
+
+    # Chunk-level analyses (deep dive)
+    html += """
+    <section>
+      <div class="section-heading">Chunk-level Deep Dive</div>
+"""
+
+    for i, text in enumerate(escaped_chunks):
+        html += f"""
+      <article class="chunk-card">
+        <div class="chunk-header" onclick="toggleChunk({i})">
+          <span>Chunk {i+1} of {total_chunks}</span>
+          <span class="chunk-toggle" id="toggle-label-{i}">Show</span>
+        </div>
+        <div class="chunk-body" id="chunk-body-{i}">
+          <pre class="pre-block">{text}</pre>
+        </div>
+      </article>
+"""
+
+    # Footer with meta & tags moved to bottom
+    html += f"""
+    </section>
+
+    <div class="footer">
+      <div class="footer-meta">
+        <div><strong>Source URL:</strong> <a href="{source_url}" target="_blank" rel="noopener noreferrer">{source_url}</a></div>
+        <div><strong>Video ID:</strong> {video_id}</div>
+        <div><strong>Chunks analyzed:</strong> {total_chunks}</div>
+      </div>
+      <div class="pill-row">
+        <div class="pill">Prototype · v0.1 reasoning engine</div>
+        <div class="pill">F/B/R/M analysis</div>
+      </div>
+      <div style="margin-top:0.6rem;">MindPilot – prototype cognitive copilot for media reasoning.</div>
+    </div>
+  </div>
+
+  <script>
+    function toggleChunk(index) {{
+      const body = document.getElementById('chunk-body-' + index);
+      const label = document.getElementById('toggle-label-' + index);
+      const isOpen = body.classList.contains('open');
+      if (isOpen) {{
+        body.classList.remove('open');
+        label.textContent = 'Show';
+      }} else {{
+        body.classList.add('open');
+        label.textContent = 'Hide';
+      }}
+    }}
+    function toggleSection(key) {{
+      const body = document.getElementById('section-' + key);
+      const label = document.getElementById('toggle-' + key);
+      const isOpen = body.classList.contains('open');
+      if (isOpen) {{
+        body.classList.remove('open');
+        label.textContent = 'Show';
+      }} else {{
+        body.classList.add('open');
+        label.textContent = 'Hide';
+      }}
+    }}
+  </script>
+</body>
+</html>
+"""
+    return html
+
+
+# ---------- MAIN PIPELINE ----------
+
+# ---------- MAIN PIPELINE ----------
+
+def main():
+    print("=== MindPilot One-Step Reasoning Analysis ===")
+    youtube_url = input("Enter YouTube URL: ").strip()
+
+    # 1) Extract video ID
+    try:
+        video_id = extract_video_id(youtube_url)
+        print(f"[1/4] Extracted video ID: {video_id}")
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    # 2) Fetch transcript
+    try:
+        transcript_text = fetch_transcript_text(video_id)
+    except RuntimeError as e:
+        print(f"Error fetching transcript: {e}")
+        return
+
+    # 3) Save raw transcript
+    save_text_to_file(transcript_text, TRANSCRIPT_FILE)
+    print(f"[2/4] Transcript saved to: {TRANSCRIPT_FILE}")
+    print(f"      Transcript length (characters): {len(transcript_text)}")
+
+    # 4) Chunk text
+    chunks = chunk_text(transcript_text, MAX_CHARS_PER_CHUNK)
+    total_chunks = len(chunks)
+    print(f"[3/4] Number of chunks created: {total_chunks}")
+
+    # 5) Build prompt pack (for manual ChatGPT use)
+    lines = []
+    lines.append("# MindPilot Reasoning Analysis Prompt Pack\n")
+    lines.append(f"_Source URL_: {youtube_url}\n")
+    lines.append(f"_Video ID_: `{video_id}`\n")
+    lines.append(f"_Chunks_: {total_chunks}\n")
+    lines.append("\n---\n\n")
+
+    for idx, chunk in enumerate(chunks):
+        chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
+        lines.append(chunk_prompt)
+
+    # Add global prompts (manual, copy/paste style)
+    lines.append(build_global_prompts())
+
+    with open(PROMPT_PACK_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    print(f"[4/4] Prompt pack written to: {PROMPT_PACK_FILE}")
+
+    # ---------- AUTOMATIC ANALYSIS SECTION ----------
+
+    # Previous interactive version (kept for later if you want it back):
+    # run_auto = input(
+    #     "\nRun automatic MindPilot analysis via OpenAI API now? (y/n): "
+    # ).strip().lower()
+    #
+    # if run_auto != "y":
+    #     print("\nSkipping automatic analysis. You can still use the prompt pack manually.\n")
+    #     return
+
+    print("\n=== Running automatic MindPilot analysis via OpenAI API ===")
+    chunk_analyses = []  # store each chunk's analysis for global summary
+
+    report_lines = []
+    report_lines.append("# MindPilot Reasoning Analysis Report\n")
+    report_lines.append(f"_Source URL_: {youtube_url}\n")
+    report_lines.append(f"_Video ID_: `{video_id}`\n")
+    report_lines.append(f"_Chunks_: {total_chunks}\n")
+    report_lines.append("\n---\n\n")
+
+    # Per-chunk analysis
+    for idx, chunk in enumerate(chunks):
+        print(f"  -> Analyzing chunk {idx + 1}/{total_chunks}...")
+        chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
+        analysis = run_mindpilot_analysis(chunk_prompt)
+
+        chunk_analyses.append(analysis)
+
+        report_lines.append(f"## Chunk {idx + 1} of {total_chunks} — MindPilot Analysis\n\n")
+        report_lines.append(analysis)
+        report_lines.append("\n\n---\n\n")
+
+    report_path = "mindpilot_analysis_report.md"
+    with open(report_path, "w", encoding="utf-8") as rf:
+        rf.write("\n".join(report_lines))
+
+    print(f"\nChunk-level analysis report written to: {report_path}")
+
+    # Optional: global summary + master map + rationality profile + investor summary
+    # ----- AUTOMATIC GLOBAL SUMMARY (no prompts) -----
+
+    global_report = ""
+
+    # Original interactive code preserved for later:
+    #
+    # build_global = input(
+    #     "Also generate global summary & investor-style overview? (y/n): "
+    # ).strip().lower()
+    #
+    # if build_global == "y":
+
+    print("\n  -> Automatically generating global summary...")
+    global_prompt = build_global_summary_prompt(chunk_analyses)
+    global_report = run_mindpilot_analysis(global_prompt)
+
+    with open(report_path, "a", encoding="utf-8") as rf:
+        rf.write("\n\n# Global MindPilot Reasoning Summary\n\n")
+        rf.write(global_report)
+        rf.write("\n")
+
+    print(f"Global summary automatically appended to: {report_path}")
+
+    # ----- Build HTML report -----
+    html_report = build_html_report(
+        source_url=youtube_url,
+        video_id=video_id,
+        total_chunks=total_chunks,
+        chunk_analyses=chunk_analyses,
+        global_report=global_report,
+    )
+    html_path = "mindpilot_report.html"
+    with open(html_path, "w", encoding="utf-8") as hf:
+        hf.write(html_report)
+
+    print(f"\nHTML report written to: {html_path}")
+    print("\nAll done! Open the markdown OR HTML report file to review the analysis.\n")
+
+
+if __name__ == "__main__":
+
+    main()
+
