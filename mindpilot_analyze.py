@@ -328,73 +328,46 @@ Now produce the following sections in clean Markdown:
 """
     return prompt.strip()
 
-def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global_report):
-    """
-    Build a structured HTML report for MindPilot analyses with
-    top-level overview, master fallacy/bias map, and deeper sections.
-    """
 
-    def escape_html(text: str) -> str:
-        return (
-            text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-        )
+def build_html_report(
+        source_url_or_label: str,
+        rationality_profile_md: str,
+        master_fallacy_bias_map_md: str,
+        full_lesson_summary_md: str,
+        condensed_investor_summary_md: str,
+        chunk_analyses: list,
+):
+    """Generate a fully-branded MindPilot Cognitive Flight Report (HTML). Matches the static report exactly."""
 
-    # Try to split the global report into its major sections
-    full_summary = ""
-    master_map = ""
-    rationality_profile = ""
-    investor_summary = ""
+    # Number of dynamic sections
+    num_sections = len(chunk_analyses)
 
-    if global_report:
-        raw = global_report
+    # Build dynamic section cards
+    sections_html = ""
+    for idx, analysis_md in enumerate(chunk_analyses):
+        sections_html += f"""
+        <article class="chunk-card">
+          <div class="chunk-header" onclick="toggleChunk({idx})">
+            <span>Section {idx + 1} of {num_sections} – Reasoning Scan</span>
+            <span class="chunk-toggle" id="toggle-label-{idx}">Show</span>
+          </div>
+          <div class="chunk-body" id="chunk-body-{idx}">
+            <pre class="pre-block">
+{analysis_md}
+            </pre>
+          </div>
+        </article>
+        """
 
-        headings = [
-            ("full", "# 1. Full-Lesson Reasoning Summary"),
-            ("map", "# 2. Master Fallacy & Bias Map"),
-            ("profile", "# 3. Rationality Profile for the Entire Segment"),
-            ("investor", "# 4. Condensed Investor-Facing Summary"),
-        ]
-
-        found = []
-        for key, heading in headings:
-            idx = raw.find(heading)
-            if idx != -1:
-                found.append((key, idx, heading))
-
-        if found:
-            found.sort(key=lambda x: x[1])
-            sections = {}
-            for i, (key, idx, heading) in enumerate(found):
-                start = idx
-                end = found[i+1][1] if i + 1 < len(found) else len(raw)
-                sections[key] = raw[start:end].strip()
-
-            full_summary = sections.get("full", "")
-            master_map = sections.get("map", "")
-            rationality_profile = sections.get("profile", "")
-            investor_summary = sections.get("investor", "")
-
-    # Escape chunk analyses for HTML
-    escaped_chunks = [escape_html(a) for a in chunk_analyses]
-
-    # Escape global sections
-    esc_full = escape_html(full_summary) if full_summary else ""
-    esc_map = escape_html(master_map) if master_map else ""
-    esc_profile = escape_html(rationality_profile) if rationality_profile else ""
-    esc_investor = escape_html(investor_summary) if investor_summary else ""
-    esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
-
-    html = f"""<!DOCTYPE html>
+    # Build full HTML report (self-contained)
+    html = f"""
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>MindPilot – Cognitive Flight Report</title>
+  <title>MindPilot – Cognitive Flight Report &amp; Reasoning Scorecard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700&display=swap" rel="stylesheet">
+
   <style>
     :root {{
       --dark-navy: #0B1B33;
@@ -404,14 +377,11 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       --border-subtle: #E2E8F0;
       --text-main: #1A202C;
       --text-muted: #4A5568;
-      --accent-warn: #E53E3E;
     }}
-    * {{
-      box-sizing: border-box;
-    }}
+    * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      font-family: 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       background: radial-gradient(circle at top left, #EBF8FF, #F7FAFC 45%, #EDFDFD 100%);
       color: var(--text-main);
     }}
@@ -420,135 +390,98 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       margin: 0 auto;
       padding: 1.5rem 1.25rem 2.5rem;
     }}
+
     header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }}
+    .logo-left {{
+      display: flex;
+      flex-direction: column;
     }}
     .logo-title {{
-      font-size: 1.8rem;
+      font-size: 1.35rem;
       font-weight: 700;
       color: var(--dark-navy);
-      letter-spacing: 0.02em;
-      margin-bottom: 0.25rem;
     }}
-    .tagline {{
-      font-size: 0.9rem;
+    .logo-sub {{
+      font-size: 0.75rem;
+      text-transform: uppercase;
       color: var(--text-muted);
+      letter-spacing: 0.16em;
     }}
-    .section-heading {{
-      font-size: 1.05rem;
-      font-weight: 600;
-      margin: 1.3rem 0 0.4rem;
-      color: var(--dark-navy);
+    .header-pill {{
+      border: 1px solid var(--border-subtle);
+      background: #fff;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
     }}
+    .header-pill-dot {{
+      width: 7px;
+      height: 7px;
+      background: #38A169;
+      border-radius: 999px;
+      box-shadow: 0 0 10px rgba(56,161,105,0.8);
+    }}
+
     .card {{
       background: var(--card-bg);
       border-radius: 1.25rem;
       padding: 1rem 1.2rem;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
-      border-top: 4px solid var(--sky-blue);
       margin-bottom: 1rem;
+      border-top: 4px solid var(--sky-blue);
+      box-shadow: 0 18px 40px rgba(0,0,0,0.08);
     }}
     .card-sub {{
-      border-radius: 1rem;
       border: 1px solid var(--border-subtle);
       background: var(--card-bg);
-      padding: 0.9rem 1rem;
-      margin-bottom: 0.8rem;
+      padding: 1rem;
+      border-radius: 1rem;
+      margin-bottom: 1rem;
     }}
     .card-title {{
+      font-size: 1rem;
       font-weight: 600;
-      font-size: 0.98rem;
-      margin-bottom: 0.35rem;
+      margin-bottom: 0.4rem;
+      color: var(--dark-navy);
     }}
     .card-body {{
       font-size: 0.9rem;
       color: var(--text-muted);
     }}
+
+    .subtext {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }}
     .pre-block {{
-      font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 0.84rem;
-      white-space: pre-wrap;         /* wrap lines */
-      word-wrap: break-word;         /* break long words if needed */
-      overflow-x: auto;              /* allow horizontal scroll if a table is too wide */
-      margin: 0;
+      white-space: pre-wrap;
+      font-size: 0.85rem;
       color: var(--text-muted);
+      font-family: Menlo, Consolas, monospace;
     }}
-    .chunk-card {{
-      border-radius: 1rem;
-      border: 1px solid var(--border-subtle);
-      background: var(--card-bg);
-      margin-bottom: 0.9rem;
-      overflow: hidden;
-    }}
-    .chunk-header {{
-      padding: 0.7rem 0.9rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      cursor: pointer;
-      background: linear-gradient(90deg, #EDF2F7, #E6FFFA);
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: var(--dark-navy);
-    }}
-    .chunk-toggle {{
-      font-size: 0.8rem;
-      color: var(--text-muted);
-    }}
-    .chunk-body {{
-      padding: 0.75rem 0.9rem 0.9rem;
-      border-top: 1px solid var(--border-subtle);
-      display: none;
-    }}
-    .chunk-body.open {{
-      display: block;
-    }}
-    .footer {{
-      margin-top: 2rem;
-      font-size: 0.8rem;
-      color: #A0AEC0;
-      text-align: center;
-    }}
-    .footer-meta {{
-      margin-bottom: 0.6rem;
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      line-height: 1.4;
-    }}
-    .footer-meta a {{
-      color: var(--sky-blue);
-      text-decoration: none;
-    }}
-    .footer-meta a:hover {{
-      text-decoration: underline;
-    }}
-    .pill-row {{
-      display: inline-flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-      justify-content: center;
-      margin-top: 0.5rem;
-    }}
-    .pill {{
-      font-size: 0.78rem;
-      padding: 0.2rem 0.5rem;
-      border-radius: 999px;
-      border: 1px solid var(--border-subtle);
-      background: rgba(79, 209, 197, 0.06);
-      color: var(--text-muted);
-    }}
+
     .collapsible-header {{
-      font-size: 0.9rem;
-      font-weight: 600;
+      cursor: pointer;
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
       color: var(--dark-navy);
-      margin-bottom: 0.35rem;
     }}
     .collapsible-body {{
       display: none;
+      margin-top: 0.5rem;
     }}
     .collapsible-body.open {{
       display: block;
@@ -557,127 +490,112 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       font-size: 0.8rem;
       color: var(--text-muted);
     }}
+
+    .chunk-card {{
+      border: 1px solid var(--border-subtle);
+      border-radius: 1rem;
+      background: var(--card-bg);
+      margin-bottom: 1rem;
+    }}
+    .chunk-header {{
+      padding: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      background: linear-gradient(90deg,#EDF2F7,#E6FFFA);
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--dark-navy);
+    }}
+    .chunk-body {{
+      display: none;
+      padding: 1rem 1rem;
+    }}
+    .chunk-body.open {{
+      display: block;
+    }}
+
+    .footer {{
+      margin-top: 2rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }}
+    .pill-row {{
+      display: flex;
+      gap: 0.4rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
+    }}
+    .pill {{
+      border: 1px solid var(--border-subtle);
+      padding: 0.25rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(79,209,197,0.1);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }}
   </style>
 </head>
 <body>
   <div class="page">
+
     <header>
-      <div class="logo-title">MindPilot Cognitive Flight Report</div>
-      <div class="tagline">Your critical thinking copilot’s readback of this content.</div>
+      <div class="logo-left">
+        <div class="logo-title">MindPilot Cognitive Flight Report</div>
+        <div class="logo-sub">Reasoning Scorecard · F/B/R/M Map</div>
+      </div>
+      <div class="header-pill">
+        <span class="header-pill-dot"></span>
+        <span>Explainable, competitor-proof reasoning engine</span>
+      </div>
     </header>
-"""
 
-    # Top-level Rationality Profile card
-    if esc_profile:
-        html += f"""
     <section class="card">
-      <div class="card-title">Rationality Profile (Overview)</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_profile}</pre>
-      </div>
+      <div class="card-title">Reasoning Scorecard (Rationality Profile)</div>
+      <pre class="pre-block">{rationality_profile_md}</pre>
     </section>
-"""
-    elif esc_global_fallback:
-        # Fallback if we couldn't split sections
-        html += f"""
-    <section class="card">
-      <div class="card-title">Global MindPilot Reasoning Overview</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_global_fallback}</pre>
-      </div>
-    </section>
-"""
 
-    # Disclaimer card between Rationality Profile and Master Map
-    html += """
     <section class="card-sub">
-      <div class="card-title">How to read this report</div>
-      <div class="card-body">
-        MindPilot is your critical thinking copilot. This analysis highlights patterns in
-        reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
-        so you can reflect more deliberately on what you’re hearing or reading.
-        <br/><br/>
-        <strong>Important:</strong> MindPilot does <em>not</em> act as a fact checker and does
-        <em>not</em> independently verify whether specific claims or statements are true.
-        It focuses on <strong>how</strong> arguments are made, not on adjudicating the
-        real-world accuracy of every assertion.
-      </div>
+      <div class="card-title">Master Fallacy & Bias Map</div>
+      <pre class="pre-block">{master_fallacy_bias_map_md}</pre>
     </section>
-"""
 
-    # Master Fallacy & Bias Map card
-    if esc_map:
-        html += f"""
-    <section class="card-sub">
-      <div class="card-title">Master Fallacy &amp; Bias Map</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_map}</pre>
-      </div>
-    </section>
-"""
-
-    # Full-Lesson Summary (collapsible)
-    if esc_full:
-        html += f"""
     <section class="card-sub">
       <div class="collapsible-header" onclick="toggleSection('full-summary')">
         <span>Full-Lesson Reasoning Summary</span>
-        <span class="collapsible-toggle" id="toggle-full-summary">Show</span>
+        <span id="toggle-full-summary" class="collapsible-toggle">Show</span>
       </div>
       <div class="collapsible-body" id="section-full-summary">
-        <pre class="pre-block">{esc_full}</pre>
+        <pre class="pre-block">{full_lesson_summary_md}</pre>
       </div>
     </section>
-"""
 
-    # Investor-facing summary (collapsible)
-    if esc_investor:
-        html += f"""
     <section class="card-sub">
       <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-        <span>Condensed Investor-Facing Summary</span>
-        <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+        <span>Condensed Executive / Investor Summary</span>
+        <span id="toggle-investor-summary" class="collapsible-toggle">Show</span>
       </div>
       <div class="collapsible-body" id="section-investor-summary">
-        <pre class="pre-block">{esc_investor}</pre>
+        <pre class="pre-block">{condensed_investor_summary_md}</pre>
       </div>
     </section>
-"""
 
-    # Chunk-level analyses (deep dive)
-    html += """
     <section>
-      <div class="section-heading">Chunk-level Deep Dive</div>
-"""
-
-    for i, text in enumerate(escaped_chunks):
-        html += f"""
-      <article class="chunk-card">
-        <div class="chunk-header" onclick="toggleChunk({i})">
-          <span>Chunk {i+1} of {total_chunks}</span>
-          <span class="chunk-toggle" id="toggle-label-{i}">Show</span>
-        </div>
-        <div class="chunk-body" id="chunk-body-{i}">
-          <pre class="pre-block">{text}</pre>
-        </div>
-      </article>
-"""
-
-    # Footer with meta & tags moved to bottom
-    html += f"""
+      <div class="card-title" style="margin-top:1.5rem;">Section-Level Deep Dive</div>
+      {sections_html}
     </section>
 
     <div class="footer">
-      <div class="footer-meta">
-        <div><strong>Source URL:</strong> <a href="{source_url}" target="_blank" rel="noopener noreferrer">{source_url}</a></div>
-        <div><strong>Video ID:</strong> {video_id}</div>
-        <div><strong>Chunks analyzed:</strong> {total_chunks}</div>
-      </div>
+      <div><strong>Source:</strong> {source_url_or_label}</div>
+      <div><strong>Sections analyzed:</strong> {num_sections}</div>
+
       <div class="pill-row">
-        <div class="pill">Prototype · v0.1 reasoning engine</div>
-        <div class="pill">F/B/R/M analysis</div>
+        <div class="pill">Cognitive Flight Report</div>
+        <div class="pill">Reasoning Scorecard</div>
+        <div class="pill">F/B/R/M Diagnostic Engine</div>
       </div>
-      <div style="margin-top:0.6rem;">MindPilot – prototype cognitive copilot for media reasoning.</div>
     </div>
   </div>
 
@@ -694,6 +612,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
         label.textContent = 'Hide';
       }}
     }}
+
     function toggleSection(key) {{
       const body = document.getElementById('section-' + key);
       const label = document.getElementById('toggle-' + key);
@@ -710,6 +629,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
 </body>
 </html>
 """
+
     return html
 
 
