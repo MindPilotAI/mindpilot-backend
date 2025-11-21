@@ -120,70 +120,135 @@ def chunk_text(text: str, max_chars: int):
 def build_chunk_prompt(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
     """
     Build a MindPilot-style reasoning analysis prompt for a single chunk.
-    Focus: fallacies, biases, persuasion, manipulation (F/B/R/M domains).
+    This version uses a compressed taxonomy for stability and consistency.
     """
     header = f"## Chunk {chunk_index + 1} of {total_chunks}\n"
 
     wrapped_chunk = textwrap.fill(chunk_text, width=100)
 
-    prompt = f"""
-You are **MindPilot**, a neutral reasoning-analysis copilot.
+    prompt = """
+You are MindPilot, a neutral reasoning-analysis copilot.
 
-Your job is to analyze this transcript chunk for:
-- Logical fallacies (F domain)
-- Cognitive biases (B domain)
-- Rhetorical / persuasion tactics (R domain)
-- Manipulative or psychological conditioning patterns (M domain)
+Your job is to analyze the following segment of a transcript for:
+- Logical fallacies (structural reasoning errors)
+- Cognitive biases (internal distortions and heuristics)
+- Rhetorical manipulation and persuasion tactics
 
-Use the following approach:
+Focus on HOW the argument thinks, not WHAT it believes.
+Do NOT fact-check external claims; assess internal reasoning only.
 
-**Transcript chunk (verbatim):**
-\"\"\"TEXT_START
-{wrapped_chunk}
-TEXT_END\"\"\"
+Here is the transcript segment:
 
-Now produce the following sections in clean Markdown:
+---
+%s
+---
 
-1. **Argument Map**
-   - Bullet list of the main claims and the key reasons/premises in your own words.
-   - Note any important assumptions that are taken for granted.
+------------------------------
+SECTION A — Local Reasoning Summary
+In 1–3 short paragraphs, describe:
+- What the speaker is trying to argue in this segment.
+- How clearly the reasoning is structured.
+- Any major strengths or weaknesses in the logic.
 
-2. **Logical Fallacies (F)**
-   - For each fallacy you detect, list:
-     - **Name** (e.g., Straw Man, Ad Hominem, Slippery Slope, False Cause, False Dilemma)
-     - **Why it applies** (1–3 sentences, referencing the text)
-     - **Severity**: Low / Medium / High
-   - If none are clear, say: "No clear fallacies detected with high confidence."
+------------------------------
+SECTION B — Logical Fallacy Scan
+Use this compact grid:
+- Ad Hominem
+- Straw Man
+- Appeal to Emotion
+- False Dichotomy
+- Slippery Slope
+- Circular Reasoning
+- Hasty Generalization
+- Appeal to Authority
+- False Cause / Post Hoc
+- False Equivalence
+- Equivocation
+- Loaded Question
 
-3. **Cognitive Biases (B)**
-   - For each bias you detect (e.g., Confirmation Bias, Anchoring, Availability, Dunning–Kruger, Negativity Bias):
-     - Name
-     - Short explanation of how it shows up in this chunk
-     - Severity: Low / Medium / High
-   - If none are clear, say so explicitly.
+You are NOT limited to these. If another fallacy appears, name it and define it briefly.
 
-4. **Rhetorical / Persuasion Tactics (R)**
-   - Identify any persuasion or framing tactics, such as:
-     - Emotional priming, bandwagon, scapegoating, authority appeal, nostalgia, fear appeal, virtue signaling, simplification/slogans, etc.
-   - For each:
-     - Name the tactic
-     - Explain briefly how the language in this chunk uses it.
+For each fallacy:
+- Name it
+- Quote or summarize the location
+- Explain why it qualifies
 
-5. **Manipulative / Conditioning Patterns (M)**
-   - Only include when you see stronger patterns like:
-     - Gaslighting, belief deconstruction, information laundering, astroturfing, weaponized uncertainty, or propaganda-style narrative control.
-   - Be cautious and neutral; if present, describe the pattern and why you suspect it.
+If none appear, say so clearly.
 
-6. **Rationality Flight Report**
-   - In 2–4 sentences, summarize how clear, fair, and evidence-based this chunk is.
-   - Provide a simple rating from 1–5 for overall reasoning quality, where:
-     - 5 = very sound, well-supported reasoning
-     - 3 = mixed: some valid reasoning with notable issues
-     - 1 = heavily distorted or manipulative reasoning
+------------------------------
+SECTION C — Cognitive Bias Scan
+Use this compact grid:
+- Confirmation Bias
+- Anchoring
+- Availability Heuristic
+- Overconfidence
+- Hindsight Bias
+- Sunk Cost
+- Framing Effect
+- In-Group / Out-Group
+- Survivorship Bias
+- Dunning–Kruger
+- Projection
+- Illusion of Explanatory Depth
+- Fundamental Attribution Error
 
-Avoid political or ideological judgment. Focus strictly on the structure of arguments, evidence, and language.
-"""
+You are NOT limited to these.
+
+For each bias:
+- Name it
+- Show how it influences reasoning
+- Explain its distortion
+
+If none appear, say so clearly.
+
+------------------------------
+SECTION D — Rhetorical Manipulation & Persuasion
+Use this compact grid:
+- Cherry-Picking
+- Loaded Language
+- Whataboutism
+- Moving the Goalposts
+- Gish Gallop
+- Appeal to Ridicule
+- False Balance
+- Motte-and-Bailey
+- Tone Policing
+- Flooding the Zone
+- False Certainty
+
+For each tactic:
+- Name it
+- Give a short example from the text
+- Explain its effect
+
+------------------------------
+SECTION E — Clarity & Evidence Quality
+Briefly assess:
+- Clarity of communication
+- Whether premises support conclusions
+- Whether key terms are defined
+- Whether evidence is vague, selective, or missing
+
+Do NOT bring external facts; focus on internal coherence.
+
+------------------------------
+SECTION F — Reflective Questions
+Provide 2–4 neutral questions the reader can ask themselves to think more clearly.
+
+------------------------------
+FORMAT TO RETURN
+Use exactly these headings:
+
+### A. Local Reasoning Summary
+### B. Logical Fallacies
+### C. Cognitive Biases
+### D. Rhetorical Manipulation & Persuasion
+### E. Clarity & Evidence
+### F. Reflective Questions
+""" % wrapped_chunk
+
     return header + "\n" + prompt.strip() + "\n\n---\n\n"
+
 
 
 def build_global_prompts() -> str:
@@ -273,60 +338,107 @@ Keep it clear, punchy, and non-technical. Focus on showcasing MindPilot's capabi
 def build_global_summary_prompt(chunk_analyses):
     """
     Build a prompt that summarizes all chunk-level MindPilot analyses into
-    a full-lesson reasoning summary, master map, rationality profile, and
-    condensed investor-style summary.
+    a full-lesson reasoning summary, master fallacy/bias map, rationality
+    profile, and condensed investor-style summary, using a compressed taxonomy.
     """
     joined_analyses = "\n\n---\n\n".join(
         f"Chunk {i+1} Analysis:\n{text}"
         for i, text in enumerate(chunk_analyses)
     )
 
-    prompt = f"""
+    prompt = """
 You are MindPilot, a neutral reasoning-analysis copilot.
 
 You have already analyzed several chunks of a single piece of content.
-Below are your chunk-level analyses, including argument maps, fallacies,
-biases, persuasion tactics, manipulation patterns, and rationality ratings.
+Below are your chunk-level analyses, including fallacies, biases, rhetorical tactics,
+and local reasoning summaries.
 
-Use them to build a GLOBAL reasoning report.
+Your task now is to synthesize these into a single, coherent, global analysis.
 
-Chunk-level analyses:
-\"\"\"TEXT_START
-{joined_analyses}
-TEXT_END\"\"\"
+Here are the chunk-level analyses:
 
-Now produce the following sections in clean Markdown:
+---
+%s
+---
 
-1. **Full-Lesson Reasoning Summary (6–10 paragraphs)**
-   - Explain the overall narrative of the content.
-   - Describe how causal claims are made (well-supported vs speculative).
-   - Note how evidence is used or not used.
-   - Summarize how fallacies, biases, and persuasion tactics appear across the whole segment.
+------------------------------------------------------------
+OBJECTIVE
+Produce a global, lesson-level reasoning diagnostic that:
+- Summarizes the overall argument and flow.
+- Maps key fallacies, cognitive biases, and rhetorical tactics across the entire segment.
+- Provides a structured “Rationality Profile”.
+- Gives a concise, non-technical, investor-facing summary of what MindPilot reveals.
 
-2. **Master Fallacy & Bias Map**
-   - List the main logical fallacies (F domain) detected across all chunks.
-   - List the main cognitive biases (B domain).
-   - List key rhetorical/persuasion tactics (R domain).
-   - List any notable manipulative/conditioning patterns (M domain).
-   - For each, briefly describe its role and how often it appears (Low/Medium/High).
+Use the same compact taxonomy grid as the chunk-level prompts, but now at a global level:
 
-3. **Rationality Profile for the Entire Segment**
-   - Create a short overview of reasoning strengths.
-   - Create a short overview of reasoning weaknesses.
-   - Provide a structured list or table of reasoning dimensions
-     (e.g., Evidence use, Causal reasoning, Emotional framing, Fairness/balance,
-     Motive attribution) with ratings from 1–5.
-   - Provide a final overall reasoning score from 1–5.
+Logical fallacies (examples):
+- Ad Hominem, Straw Man, Appeal to Emotion, False Dichotomy, Slippery Slope,
+  Circular Reasoning, Hasty Generalization, Appeal to Authority,
+  False Cause / Post Hoc, False Equivalence, Equivocation, Loaded Question.
 
-4. **Condensed Investor-Facing Summary**
-   - In 3–6 short paragraphs, describe:
-     - What the content is about.
-     - What MindPilot found (fallacies/biases/persuasion patterns, rationality level).
-     - Why this demonstrates the value of MindPilot as a product
-       (media literacy, education, compliance, etc.).
-   - Keep it punchy and non-technical, suitable for an investor demo.
-"""
+Cognitive biases (examples):
+- Confirmation Bias, Anchoring, Availability Heuristic, Overconfidence,
+  Hindsight Bias, Sunk Cost Fallacy, Framing Effect,
+  In-Group / Out-Group Bias, Survivorship Bias, Dunning–Kruger,
+  Projection, Illusion of Explanatory Depth, Fundamental Attribution Error.
+
+Rhetorical manipulation (examples):
+- Cherry-Picking, Loaded Language, Whataboutism, Moving the Goalposts, Gish Gallop,
+  Appeal to Ridicule, False Balance, Motte-and-Bailey, Tone Policing,
+  Flooding the Zone, False Certainty.
+
+You are NOT limited to these lists: if other fallacies, biases, or tactics appear,
+name them and define them briefly.
+
+------------------------------------------------------------
+FORMAT (CRITICAL)
+
+Return your answer in clean Markdown using EXACTLY these four top-level headers:
+
+# 1. Full-Lesson Reasoning Summary
+Summarize the overall reasoning in 3–7 short paragraphs:
+- What the content is about.
+- How the reasoning flows from start to finish.
+- Main strengths and weaknesses in the logic and structure.
+- How evidence is (or is not) used.
+
+# 2. Master Fallacy & Bias Map
+Create a global map of reasoning issues:
+- List the main logical fallacies across all chunks.
+- List the main cognitive biases.
+- List the main rhetorical/persuasion tactics.
+For each item:
+- Name it clearly.
+- Point to where it tends to appear (early/middle/late, or by theme).
+- Describe its role and approximate prevalence: Low / Medium / High.
+
+# 3. Rationality Profile for the Entire Segment
+Provide a structured “Rationality Profile” of the content:
+- Brief paragraph on reasoning strengths.
+- Brief paragraph on reasoning weaknesses.
+- Then a simple list or table rating dimensions (1–5), such as:
+  - Evidence use
+  - Causal reasoning
+  - Clarity and precision
+  - Emotional vs rational framing
+  - Fairness / steelmanning of opposing views
+  - Use of uncertainty and confidence
+Include a final overall reasoning score from 1–5 with a one-sentence justification.
+
+# 4. Condensed Investor-Facing Summary
+Write a concise, non-technical summary (3–6 short paragraphs) for an investor or stakeholder:
+- What this content is and who it is for.
+- What MindPilot discovered about its reasoning quality (fallacies, biases, tactics, rationality level).
+- Why this demonstrates the value of MindPilot as a product (media literacy, education, compliance, risk analysis, etc.).
+
+Avoid political advocacy or ideological cheerleading.
+Keep a neutral, explanatory tone.
+
+Only return these four sections in Markdown with the exact headers above.
+""" % joined_analyses
+
     return prompt.strip()
+
 
 
 def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global_report):
