@@ -337,106 +337,89 @@ Keep it clear, punchy, and non-technical. Focus on showcasing MindPilot's capabi
 
 def build_global_summary_prompt(chunk_analyses):
     """
-    Build a prompt that summarizes all chunk-level MindPilot analyses into
-    a full-lesson reasoning summary, master fallacy/bias map, rationality
-    profile, and condensed investor-style summary, using a compressed taxonomy.
+    Build a prompt that summarizes all chunk-level MindPilot analyses into:
+    - a full-lesson reasoning summary,
+    - a master fallacy & bias map,
+    - a rationality profile,
+    - an investor-facing summary, and
+    - a set of critical-thinking questions based on detected errors.
     """
     joined_analyses = "\n\n---\n\n".join(
         f"Chunk {i+1} Analysis:\n{text}"
         for i, text in enumerate(chunk_analyses)
     )
 
-    prompt = """
+    prompt = f"""
 You are MindPilot, a neutral reasoning-analysis copilot.
 
 You have already analyzed several chunks of a single piece of content.
-Below are your chunk-level analyses, including fallacies, biases, rhetorical tactics,
-and local reasoning summaries.
+Below are your own chunk-level analyses, including argument maps,
+fallacies, biases, rhetorical tactics, manipulation patterns, and
+rationality scores.
 
-Your task now is to synthesize these into a single, coherent, global analysis.
-
-Here are the chunk-level analyses:
-
----
-%s
----
-
-------------------------------------------------------------
-OBJECTIVE
-Produce a global, lesson-level reasoning diagnostic that:
-- Summarizes the overall argument and flow.
-- Maps key fallacies, cognitive biases, and rhetorical tactics across the entire segment.
-- Provides a structured “Rationality Profile”.
-- Gives a concise, non-technical, investor-facing summary of what MindPilot reveals.
-
-Use the same compact taxonomy grid as the chunk-level prompts, but now at a global level:
-
-Logical fallacies (examples):
-- Ad Hominem, Straw Man, Appeal to Emotion, False Dichotomy, Slippery Slope,
-  Circular Reasoning, Hasty Generalization, Appeal to Authority,
-  False Cause / Post Hoc, False Equivalence, Equivocation, Loaded Question.
-
-Cognitive biases (examples):
-- Confirmation Bias, Anchoring, Availability Heuristic, Overconfidence,
-  Hindsight Bias, Sunk Cost Fallacy, Framing Effect,
-  In-Group / Out-Group Bias, Survivorship Bias, Dunning–Kruger,
-  Projection, Illusion of Explanatory Depth, Fundamental Attribution Error.
-
-Rhetorical manipulation (examples):
-- Cherry-Picking, Loaded Language, Whataboutism, Moving the Goalposts, Gish Gallop,
-  Appeal to Ridicule, False Balance, Motte-and-Bailey, Tone Policing,
-  Flooding the Zone, False Certainty.
-
-You are NOT limited to these lists: if other fallacies, biases, or tactics appear,
-name them and define them briefly.
-
-------------------------------------------------------------
-FORMAT (CRITICAL)
-
-Return your answer in clean Markdown using EXACTLY these four top-level headers:
+Using ONLY those analyses (do not invent new content), produce a single
+global report in clean Markdown with the following EXACT numbered
+headings:
 
 # 1. Full-Lesson Reasoning Summary
-Summarize the overall reasoning in 3–7 short paragraphs:
-- What the content is about.
-- How the reasoning flows from start to finish.
-- Main strengths and weaknesses in the logic and structure.
-- How evidence is (or is not) used.
+- In 6–10 paragraphs, explain the overall narrative of the content.
+- Describe how causal claims are made (well-supported vs. speculative).
+- Note how evidence is used or not used.
+- Summarize how fallacies, biases, and persuasion tactics appear across
+  the whole segment.
+- Keep the tone neutral and descriptive, not partisan or emotional.
 
 # 2. Master Fallacy & Bias Map
-Create a global map of reasoning issues:
-- List the main logical fallacies across all chunks.
-- List the main cognitive biases.
-- List the main rhetorical/persuasion tactics.
-For each item:
-- Name it clearly.
-- Point to where it tends to appear (early/middle/late, or by theme).
-- Describe its role and approximate prevalence: Low / Medium / High.
+- List the main logical fallacies (F domain) detected across all chunks.
+- List the main cognitive biases (B domain).
+- List key rhetorical/persuasion tactics (R domain).
+- List any notable manipulative/conditioning patterns (M domain).
+- For each, briefly describe:
+  - how it shows up in the content, and
+  - how often it appears (Low / Medium / High).
 
 # 3. Rationality Profile for the Entire Segment
-Provide a structured “Rationality Profile” of the content:
-- Brief paragraph on reasoning strengths.
-- Brief paragraph on reasoning weaknesses.
-- Then a simple list or table rating dimensions (1–5), such as:
-  - Evidence use
-  - Causal reasoning
-  - Clarity and precision
-  - Emotional vs rational framing
-  - Fairness / steelmanning of opposing views
-  - Use of uncertainty and confidence
-Include a final overall reasoning score from 1–5 with a one-sentence justification.
+- Create a short overview of reasoning strengths.
+- Create a short overview of reasoning weaknesses.
+- Provide a structured list or table of reasoning dimensions
+  (e.g., Evidence use, Causal reasoning, Emotional framing,
+  Fairness/balance, Motive attribution) with ratings from 1–5.
+- Provide a final overall reasoning score from 1–5.
+- Keep this grounded in your own chunk-level findings.
 
 # 4. Condensed Investor-Facing Summary
-Write a concise, non-technical summary (3–6 short paragraphs) for an investor or stakeholder:
-- What this content is and who it is for.
-- What MindPilot discovered about its reasoning quality (fallacies, biases, tactics, rationality level).
-- Why this demonstrates the value of MindPilot as a product (media literacy, education, compliance, risk analysis, etc.).
+- In 3–6 short paragraphs, describe:
+  - What the content is about (1–2 sentences).
+  - What MindPilot found (main fallacies/biases/persuasion patterns,
+    overall rationality level).
+  - Why this demonstrates the value of MindPilot as a product (media
+    literacy, education, compliance, etc.).
+- Keep it punchy and non-technical, suitable for an investor demo.
 
-Avoid political advocacy or ideological cheerleading.
-Keep a neutral, explanatory tone.
+# 5. Critical Thinking Questions to Ask Yourself
+- Based strictly on the most important fallacies, biases, rhetorical
+  tactics, and manipulation patterns you have already identified.
+- Write 6–12 specific, neutral questions that a thoughtful reader could
+  ask or research to counteract these errors in judgment.
+- Group questions under short subheadings that correspond to the main
+  patterns (e.g., "Bandwagon & Social Pressure", "Confirmation Bias &
+  Selective Evidence", "Appeals to Fear", etc.).
+- Make the questions actionable and reflective, for example:
+  - "What evidence would I need to see to change my mind about X?"
+  - "Whose perspectives are missing from this narrative?"
+  - "Am I accepting this claim mainly because it feels familiar or
+     aligns with my group identity?"
+- DO NOT tell the reader what to believe; focus on how they can think
+  more clearly and investigate further.
 
-Only return these four sections in Markdown with the exact headers above.
-""" % joined_analyses
+Here are your chunk-level analyses to base this on:
 
+----------------- BEGIN CHUNK ANALYSES -----------------
+
+{joined_analyses}
+
+----------------- END CHUNK ANALYSES -------------------
+"""
     return prompt.strip()
 
 
@@ -468,6 +451,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
             ("map", "# 2. Master Fallacy & Bias Map"),
             ("profile", "# 3. Rationality Profile for the Entire Segment"),
             ("investor", "# 4. Condensed Investor-Facing Summary"),
+            ("questions", "# 5. Critical Thinking Questions to Ask Yourself"),
         ]
 
         found = []
@@ -488,6 +472,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
             master_map = sections.get("map", "")
             rationality_profile = sections.get("profile", "")
             investor_summary = sections.get("investor", "")
+            questions_block = sections.get("questions", "")
 
     # Escape chunk analyses for HTML
     escaped_chunks = [escape_html(a) for a in chunk_analyses]
@@ -497,6 +482,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     esc_map = escape_html(master_map) if master_map else ""
     esc_profile = escape_html(rationality_profile) if rationality_profile else ""
     esc_investor = escape_html(investor_summary) if investor_summary else ""
+    esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
 
     html = f"""<!DOCTYPE html>
@@ -753,6 +739,19 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       </div>
     </section>
 """
+        # Critical thinking questions (collapsible)
+        if esc_questions:
+            html += f"""
+        <section class="card-sub">
+          <div class="collapsible-header" onclick="toggleSection('critical-questions')">
+            <span>Critical Thinking Questions to Ask or Research</span>
+            <span class="collapsible-toggle" id="toggle-critical-questions">Show</span>
+          </div>
+          <div class="collapsible-body" id="section-critical-questions">
+            <pre class="pre-block">{esc_questions}</pre>
+          </div>
+        </section>
+    """
 
     # Chunk-level / Section-level Deep Dive
     html += """
