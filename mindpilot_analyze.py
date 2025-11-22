@@ -424,7 +424,14 @@ Here are your chunk-level analyses to base this on:
 
 
 
-def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global_report):
+def build_html_report(
+    source_url,
+    video_id,
+    total_chunks,
+    chunk_analyses,
+    global_report,
+    grok_insights: str | None = None,
+):
     """
     Build a structured HTML report for MindPilot analyses with
     top-level overview, master fallacy/bias map, and deeper sections.
@@ -484,6 +491,8 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     esc_investor = escape_html(investor_summary) if investor_summary else ""
     esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
+    # Optional Grok enrichment (if provided)
+    esc_grok = escape_html(grok_insights) if grok_insights else ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -711,6 +720,19 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       </div>
     </section>
 """
+        # Optional Grok enrichment card (collapsible)
+        if esc_grok:
+            html += f"""
+        <section class="card-sub">
+          <div class="collapsible-header" onclick="toggleSection('grok-enrichment')">
+            <span>MindPilot × Grok Live Context &amp; Creative Debrief</span>
+            <span class="collapsible-toggle" id="toggle-grok-enrichment">Show</span>
+          </div>
+          <div class="collapsible-body" id="section-grok-enrichment">
+            <pre class="pre-block">{esc_grok}</pre>
+          </div>
+        </section>
+    """
 
     # Full-Lesson Summary (collapsible)
     if esc_full:
@@ -944,7 +966,9 @@ def main():
         total_chunks=total_chunks,
         chunk_analyses=chunk_analyses,
         global_report=global_report,
+        grok_insights=None,  # CLI path: no Grok enrichment wired here yet
     )
+
     html_path = "mindpilot_report.html"
     with open(html_path, "w", encoding="utf-8") as hf:
         hf.write(html_report)
