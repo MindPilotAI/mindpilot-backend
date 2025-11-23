@@ -424,7 +424,15 @@ Here are your chunk-level analyses to base this on:
 
 
 
-def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global_report):
+def build_html_report(
+    source_url,
+    video_id,
+    total_chunks,
+    chunk_analyses,
+    global_report,
+    grok_insights: str | None = None,
+):
+
     """
     Build a structured HTML report for MindPilot analyses with
     top-level overview, master fallacy/bias map, and deeper sections.
@@ -442,6 +450,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     master_map = ""
     rationality_profile = ""
     investor_summary = ""
+    questions_block = ""  # 🔹 add this line
 
     if global_report:
         raw = global_report
@@ -484,6 +493,22 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     esc_investor = escape_html(investor_summary) if investor_summary else ""
     esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
+    esc_grok = escape_html(grok_insights) if grok_insights else ""
+
+    if esc_grok:
+        grok_card_html = f"""
+        <section class="card-sub">
+          <div class="collapsible-header" onclick="toggleSection('grok-card')">
+            <span>MindPilot × Grok Live Context & Creative Debrief</span>
+            <span class="collapsible-toggle" id="toggle-grok-card">Show</span>
+          </div>
+          <div class="collapsible-body" id="section-grok-card">
+            <pre class="pre-block">{esc_grok}</pre>
+          </div>
+        </section>
+        """
+    else:
+        grok_card_html = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -653,6 +678,15 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
       font-size: 0.8rem;
       color: var(--text-muted);
     }}
+.fallacy-pre {{
+  overflow-x: auto;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 
+               "Liberation Mono", "Courier New", monospace;
+  font-size: 0.8rem;
+}}
+</style>
+   
   </style>
 </head>
 <body>
@@ -666,13 +700,20 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     # Top-level Rationality Profile card
     if esc_profile:
         html += f"""
-    <section class="card">
-      <div class="card-title">Rationality Profile (Overview)</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_profile}</pre>
-      </div>
-    </section>
-"""
+            <section class="card">
+              ...
+                <section class="card-sub">
+                  <div class="collapsible-header" onclick="toggleSection('investor-summary')">
+                    <span>Condensed Investor-Facing Summary</span>
+                    <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+                  </div>
+                  <div class="collapsible-body" id="section-investor-summary">
+                    <pre class="pre-block">{esc_investor}</pre>
+                  </div>
+                </section>
+                {grok_card_html}
+        """
+
     elif esc_global_fallback:
         # Fallback if we couldn't split sections
         html += f"""
@@ -707,7 +748,7 @@ def build_html_report(source_url, video_id, total_chunks, chunk_analyses, global
     <section class="card-sub">
       <div class="card-title">Master Fallacy &amp; Bias Map</div>
       <div class="card-body">
-        <pre class="pre-block">{esc_map}</pre>
+      <pre class="pre-block fallacy-pre">{esc_map}</pre>
       </div>
     </section>
 """
