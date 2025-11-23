@@ -13,8 +13,7 @@ from mindpilot_analyze import (
     build_html_report,  # from your current HTML builder
     MAX_CHARS_PER_CHUNK,
 )
-from mindpilot_llm_client import run_mindpilot_analysis, run_grok_enrichment
-#                                             ^^^^^^^^^^^^^^^^^^^^^ NEW IMPORT
+from mindpilot_llm_client import run_mindpilot_analysis
 
 
 def run_analysis_from_transcript(
@@ -42,23 +41,16 @@ def run_analysis_from_transcript(
     global_prompt = build_global_summary_prompt(chunk_analyses)
     global_report = run_mindpilot_analysis(global_prompt)
 
-    # 3b) Optional Grok enrichment
-    # Choose a short label for Grok: prefer youtube_url label, else generic label
-    grok_label = source_label or (youtube_url or "Pasted content")
-    grok_insights = run_grok_enrichment(grok_label, global_report)
-
     # 4) Build HTML
     final_html = build_html_report(
-        youtube_url or source_label or "",  # source_url
-        video_id or source_label or "N/A",  # video_id
-        total_chunks,                       # total_chunks
-        chunk_analyses,                     # chunk_analyses
-        global_report,                      # global_report
-        grok_insights=grok_insights,        # NEW ARG: Grok enrichment (optional)
+        source_url=youtube_url or source_label or "",
+        video_id=video_id or source_label or "N/A",
+        total_chunks=total_chunks,
+        chunk_analyses=chunk_analyses,
+        global_report=global_report,
     )
 
     return final_html
-
 
 
 def run_full_analysis_from_youtube(youtube_url: str) -> str:
