@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-from mindpilot_analyze_old import (
+from mindpilot_analyze import (
     extract_video_id,
     fetch_transcript_text,
     chunk_text,
