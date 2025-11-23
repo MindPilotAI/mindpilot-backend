@@ -91,5 +91,20 @@ async def analyze(
                 # You can uncomment this if you want full trace in JSON (dev only):
                 # "trace": traceback.format_exc(),
             },
+
             status_code=500,
         )
+@app.get("/test_grok")
+async def test_grok():
+    from mindpilot_llm_client import run_grok_enrichment
+
+    try:
+        result = run_grok_enrichment("Test Label", "This is a test global summary.")
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        import traceback
+        return {
+            "status": "error",
+            "error": str(e),
+            "trace": traceback.format_exc(),
+        }
