@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from mindpilot_engine import (
     run_full_analysis_from_youtube,
     run_full_analysis_from_text,
+    run_full_analysis_from_article,
 )
+
 
 # ---------------------------------------------------------
 # Logging config (critical for debugging Railway crashes)
@@ -44,18 +46,15 @@ async def health():
 # Main Analysis Endpoint
 # ---------------------------------------------------------
 @app.post("/analyze", response_class=HTMLResponse)
-async def analyze(
-    mode: str = Form(...),        # "YouTube" or "text"
-    input_value: str = Form(...),
-):
+async def analyze(mode: str = Form(...), input_value: str = Form(...)):
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
 
-    - mode = "YouTube": input_value is a YouTube URL
+    - mode = "youtube": input_value is a YouTube URL
     - mode = "text":    input_value is a block of text to analyze
+    - mode = "article": input_value is a news/article URL
     """
-
     logging.info(f"[MindPilot] /analyze received mode={mode}")
 
     try:
@@ -65,35 +64,32 @@ async def analyze(
             html_report = run_full_analysis_from_youtube(youtube_url)
 
         elif mode == "text":
-            logging.info(
-                f"[MindPilot] Running text analysis. Length={len(input_value)} chars"
-            )
             html_report = run_full_analysis_from_text(
                 raw_text=input_value,
                 source_label="Pasted text",
             )
 
+        elif mode == "article":
+            article_url = input_value.strip()
+            logging.info(f"[MindPilot] Running article analysis: {article_url}")
+            html_report = run_full_analysis_from_article(article_url)
+
         else:
-            logging.error(f"Unsupported mode: {mode}")
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
 
         return HTMLResponse(content=html_report, status_code=200)
 
     except Exception as e:
-        # Logs full stack trace to Railway for debugging
         logging.error("Error in /analyze endpoint", exc_info=True)
-
         return JSONResponse(
             {
                 "status": "error",
                 "message": "MindPilot backend crashed during analysis.",
                 "detail": str(e),
-                # You can uncomment this if you want full trace in JSON (dev only):
-                # "trace": traceback.format_exc(),
             },
-
             status_code=500,
         )
+
 from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
 
 
