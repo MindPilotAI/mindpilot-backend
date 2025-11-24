@@ -309,7 +309,11 @@ lesson-level rationality profile. Include:
 - A table or structured list of key reasoning dimensions
   (Evidence use, Causal reasoning, Emotional framing, Fairness/balance,
    Motive attribution, etc.) with 1–5 ratings
-- A final overall reasoning score from 1–5."
+- A final overall reasoning score on a 0–100 scale.
+- At the very end of this section, add a standalone line in this exact format:
+  "Overall reasoning score: NN/100"
+  where NN is an integer from 0 to 100."
+
 
 ---
 
@@ -444,7 +448,8 @@ def build_html_report(
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
         )
-
+    # --- defaults so linters don't complain ---
+    dimension_bars_html = ""
     # Try to split the global report into its major sections
     full_summary = ""
     master_map = ""
@@ -486,7 +491,6 @@ def build_html_report(
     # Escape chunk analyses for HTML
     escaped_chunks = [escape_html(a) for a in chunk_analyses]
 
-    # Escape global sections
     esc_full = escape_html(full_summary) if full_summary else ""
     esc_map = escape_html(master_map) if master_map else ""
     esc_profile = escape_html(rationality_profile) if rationality_profile else ""
@@ -494,7 +498,107 @@ def build_html_report(
     esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
     esc_grok = escape_html(grok_insights) if grok_insights else ""
+    # --- Parse dimension-level 1–5 ratings from the rationality profile ---
+    dimension_bars_html = ""
+    if rationality_profile:
+        dimension_scores = []
+        # Expect lines like: "Evidence use: 4/5 – explanation"
+        for match in re.finditer(
+            r"^\s*[-•]?\s*([A-Za-z][A-Za-z\s/]+?):\s*([1-5])\s*/\s*5\b",
+            rationality_profile,
+            flags=re.MULTILINE,
+        ):
+            dim_name = match.group(1).strip()
+            try:
+                dim_score = int(match.group(2))
+            except ValueError:
+                continue
+            if 1 <= dim_score <= 5:
+                dimension_scores.append((dim_name, dim_score))
 
+        if dimension_scores:
+            rows = []
+            for dim_name, dim_score in dimension_scores:
+                width_pct = int(round(dim_score / 5 * 100))
+                rows.append(f"""
+          <div class="dimension-row">
+            <div class="dimension-label">{escape_html(dim_name)}</div>
+            <div class="dimension-track">
+              <div class="dimension-fill" style="width: {width_pct}%"></div>
+            </div>
+            <div class="dimension-score">{dim_score}/5</div>
+          </div>
+            """)
+            dimension_bars_html = """
+        <div class="dimension-bars">
+        """ + "".join(rows) + """
+        </div>
+        """
+
+    # --- Try to parse an overall rationality score (0–100) from the profile ---
+    overall_score_100: int | None = None
+    if rationality_profile:
+        # Preferred: a line like "Overall reasoning score: 74/100"
+        score_match = re.search(
+            r"(?i)overall reasoning score\s*:\s*([0-9]{1,3})\s*/\s*100",
+            rationality_profile,
+        )
+        if not score_match:
+            # Fallback: anything like "score ... 74/100"
+            score_match = re.search(
+                r"(?i)score[^0-9]{0,80}([0-9]{1,3})\s*/\s*100",
+                rationality_profile,
+            )
+        if score_match:
+            try:
+                candidate = int(score_match.group(1))
+                if 0 <= candidate <= 100:
+                    overall_score_100 = candidate
+            except ValueError:
+                overall_score_100 = None
+
+    score_chip_html = ""
+    score_bar_html = ""
+
+    if overall_score_100 is not None:
+        band = overall_score_100
+        if band < 25:
+            label = "Very low reasoning quality"
+        elif band < 45:
+            label = "Low / fragile reasoning"
+        elif band < 65:
+            label = "Mixed / uneven reasoning"
+        elif band < 85:
+            label = "Generally strong reasoning"
+        else:
+            label = "Very strong reasoning"
+
+        score_chip_html = f"""
+        <div class="pill-row">
+          <div class="pill"><strong>Overall reasoning score:</strong> {overall_score_100}/100 · {label}</div>
+        </div>
+        """
+
+        score_bar_html = f"""
+        <div class="score-bar-container">
+          <div class="score-bar-track">
+            <div class="score-bar-fill" style="width: {overall_score_100}%"></div>
+          </div>
+          <div class="score-bar-label">{overall_score_100}/100 overall reasoning quality</div>
+        </div>
+        """
+
+    # Flag if we have anything global-ish to show
+    has_any_global = any([
+        esc_profile,
+        esc_full,
+        esc_map,
+        esc_questions,
+        esc_investor,
+        bool(esc_grok),
+    ])
+
+    # Grok card (used inside the global card if present)
     if esc_grok:
         grok_card_html = f"""
         <section class="card-sub">
@@ -509,6 +613,8 @@ def build_html_report(
         """
     else:
         grok_card_html = ""
+
+
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -584,6 +690,12 @@ def build_html_report(
     .card-body {{
       font-size: 0.9rem;
       color: var(--text-muted);
+    }}
+    .card-body-text {{
+      margin: 0 0 0.6rem 0;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.5;
     }}
     .pre-block {{
       font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -685,9 +797,65 @@ def build_html_report(
                "Liberation Mono", "Courier New", monospace;
   font-size: 0.8rem;
 }}
+    .score-bar-container {{
+      margin: 0.4rem 0;
+    }}
+    .score-bar-track {{
+      width: 100%;
+      height: 0.55rem;
+      border-radius: 999px;
+      background: #E2E8F0;
+      overflow: hidden;
+    }}
+    .score-bar-fill {{
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #4FD1C5, #3182CE);
+      transition: width 0.4s ease-out;
+    }}
+    .score-bar-label {{
+      margin-top: 0.25rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }}
+        .dimension-bars {{
+      margin-top: 0.4rem;
+    }}
+    .dimension-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.8fr) 3fr auto;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }}
+    .dimension-label {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .dimension-track {{
+      width: 100%;
+      height: 0.4rem;
+      border-radius: 999px;
+      background: #E2E8F0;
+      overflow: hidden;
+    }}
+    .dimension-fill {{
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #9F7AEA, #ED64A6);
+      transition: width 0.3s ease-out;
+    }}
+    .dimension-score {{
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      min-width: 2.5rem;
+      text-align: right;
+    }}
+
 </style>
-   
-  </style>
 </head>
 <body>
   <div class="page">
@@ -697,25 +865,104 @@ def build_html_report(
     </header>
 """
 
-    # Top-level Rationality Profile card
-    if esc_profile:
+    # Top-level Global / Rationality Profile card
+    if has_any_global:
         html += f"""
-            <section class="card">
-              ...
-                <section class="card-sub">
-                  <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-                    <span>Condensed Investor-Facing Summary</span>
-                    <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
-                  </div>
-                  <div class="collapsible-body" id="section-investor-summary">
-                    <pre class="pre-block">{esc_investor}</pre>
-                  </div>
-                </section>
-                {grok_card_html}
+    <section class="card">
+      <div class="card-title">Global MindPilot Reasoning Overview</div>
+            <div class="card-body">
+        <p class="card-body-text">
+          This section pulls together patterns from across the entire piece:
+          reasoning strengths and weaknesses, key fallacy & bias clusters, and
+          an overall rationality profile on a 0–100 scale.
+        </p>
+        {score_chip_html}
+        {score_bar_html}
+      </div>
+
+        """
+
+        # 1) Full-lesson summary
+        if esc_full:
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('global-summary')">
+          <span>Full-Lesson Reasoning Summary</span>
+          <span class="collapsible-toggle" id="toggle-global-summary">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-global-summary">
+          <pre class="pre-block">{esc_full}</pre>
+        </div>
+      </section>
+            """
+
+        # 2) Master fallacy & bias map
+        if esc_map:
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('master-map')">
+          <span>Master Fallacy & Bias Map</span>
+          <span class="collapsible-toggle" id="toggle-master-map">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-master-map">
+          <pre class="pre-block">{esc_map}</pre>
+        </div>
+      </section>
+            """
+
+        # 3) Rationality profile for the entire segment
+        if esc_profile:
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('rationality-profile')">
+          <span>Rationality Profile for the Entire Segment</span>
+          <span class="collapsible-toggle" id="toggle-rationality-profile">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-rationality-profile">
+            {dimension_bars_html}
+          <pre class="pre-block">{esc_profile}</pre>
+        </div>
+      </section>
+            """
+
+        # 4) Condensed investor-facing summary
+        if esc_investor:
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('investor-summary')">
+          <span>Condensed Investor-Facing Summary</span>
+          <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-investor-summary">
+          <pre class="pre-block">{esc_investor}</pre>
+        </div>
+      </section>
+            """
+
+        # 5) Critical thinking questions
+        if esc_questions:
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('critical-questions')">
+          <span>Critical Thinking Questions to Ask Yourself</span>
+          <span class="collapsible-toggle" id="toggle-critical-questions">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-critical-questions">
+          <pre class="pre-block">{esc_questions}</pre>
+        </div>
+      </section>
+            """
+
+        # 6) Grok enrichment (if present)
+        html += grok_card_html
+
+        # Close the global card wrapper
+        html += """
+    </section>
         """
 
     elif esc_global_fallback:
-        # Fallback if we couldn't split sections
+        # Fallback: show the whole global report as a single block
         html += f"""
     <section class="card">
       <div class="card-title">Global MindPilot Reasoning Overview</div>
@@ -723,7 +970,7 @@ def build_html_report(
         <pre class="pre-block">{esc_global_fallback}</pre>
       </div>
     </section>
-"""
+        """
 
     # Disclaimer card
     html += """
