@@ -94,6 +94,33 @@ async def analyze(
 
             status_code=500,
         )
+from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
+
+
+@app.get("/test_openai")
+async def test_openai():
+    """
+    Simple sanity check endpoint for the core MindPilot LLM client.
+    Calls run_mindpilot_analysis() with a tiny prompt and returns either
+    a preview of the output or a detailed error.
+    """
+    import traceback
+
+    try:
+        result = run_mindpilot_analysis(
+            "Short sanity check: reply with one sentence confirming MindPilot is online."
+        )
+        return {
+            "status": "ok",
+            "preview": result[:400],
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "detail": str(e),
+            "trace": traceback.format_exc(),
+        }
+
 @app.get("/test_grok")
 async def test_grok():
     from mindpilot_llm_client import run_grok_enrichment

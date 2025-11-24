@@ -15,7 +15,15 @@ def get_openai_client() -> OpenAI:
     return _client
 
 
-def run_mindpilot_analysis(prompt: str, model: str = "gpt-4.1-mini") -> str:
+def run_mindpilot_analysis(prompt: str, model: str = "gpt-4o-mini") -> str:
+    """
+    Core MindPilot LLM call.
+
+    Default model:
+    - gpt-4o-mini: widely available, cheap, good reasoning
+    - If you later confirm access to gpt-4.1-mini, you can switch back.
+    """
+
     client = get_openai_client()
 
     response = client.chat.completions.create(
