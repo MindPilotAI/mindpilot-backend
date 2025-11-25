@@ -10,7 +10,11 @@ from mindpilot_engine import (
     run_full_analysis_from_youtube,
     run_full_analysis_from_text,
     run_full_analysis_from_article,
+    run_quick_analysis_from_youtube,   # NEW
+    run_quick_analysis_from_text,      # NEW
+    run_quick_analysis_from_article,   # NEW
 )
+
 
 
 # ---------------------------------------------------------
@@ -46,7 +50,11 @@ async def health():
 # Main Analysis Endpoint
 # ---------------------------------------------------------
 @app.post("/analyze", response_class=HTMLResponse)
-async def analyze(mode: str = Form(...), input_value: str = Form(...)):
+async def analyze(
+    mode: str = Form(...),
+    input_value: str = Form(...),
+    depth: str = Form("full"),  # "quick" or "full"
+):
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
@@ -54,25 +62,53 @@ async def analyze(mode: str = Form(...), input_value: str = Form(...)):
     - mode = "youtube": input_value is a YouTube URL
     - mode = "text":    input_value is a block of text to analyze
     - mode = "article": input_value is a news/article URL
+    - depth = "quick" or "full"
     """
-    logging.info(f"[MindPilot] /analyze received mode={mode}")
+    logging.info(f"[MindPilot] /analyze received mode={mode}, depth={depth}")
+
+    depth = (depth or "full").lower().strip()
+    if depth not in ("quick", "full"):
+        depth = "full"
 
     try:
         if mode == "youtube":
             youtube_url = input_value.strip()
-            logging.info(f"[MindPilot] Running YouTube analysis: {youtube_url}")
-            html_report = run_full_analysis_from_youtube(youtube_url)
+            logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
+
+            if depth == "quick":
+                html_report = run_quick_analysis_from_youtube(
+                    youtube_url,
+                    include_grok=False,  # keep quick = cheap; can revisit later
+                )
+            else:
+                html_report = run_full_analysis_from_youtube(youtube_url)
 
         elif mode == "text":
-            html_report = run_full_analysis_from_text(
-                raw_text=input_value,
-                source_label="Pasted text",
-            )
+            logging.info(f"[MindPilot] Running {depth} text analysis")
+
+            if depth == "quick":
+                html_report = run_quick_analysis_from_text(
+                    raw_text=input_value,
+                    source_label="Pasted text",
+                    include_grok=False,
+                )
+            else:
+                html_report = run_full_analysis_from_text(
+                    raw_text=input_value,
+                    source_label="Pasted text",
+                )
 
         elif mode == "article":
             article_url = input_value.strip()
-            logging.info(f"[MindPilot] Running article analysis: {article_url}")
-            html_report = run_full_analysis_from_article(article_url)
+            logging.info(f"[MindPilot] Running {depth} article analysis: {article_url}")
+
+            if depth == "quick":
+                html_report = run_quick_analysis_from_article(
+                    article_url,
+                    include_grok=False,
+                )
+            else:
+                html_report = run_full_analysis_from_article(article_url)
 
         else:
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
@@ -89,6 +125,7 @@ async def analyze(mode: str = Form(...), input_value: str = Form(...)):
             },
             status_code=500,
         )
+
 
 from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
 

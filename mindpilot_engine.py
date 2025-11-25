@@ -20,6 +20,58 @@ from mindpilot_analyze import (
 
 from mindpilot_llm_client import run_mindpilot_analysis, run_grok_enrichment
 
+def build_quick_global_prompt(transcript_text: str) -> str:
+    """
+    Quick mode: single-pass reasoning scan over the entire content.
+    No chunk-by-chunk analysis, just a compact global profile,
+    but using the SAME top-level headings as the full report
+    so the HTML builder can parse it.
+    """
+    return f"""
+You are MindPilot, a neutral reasoning-analysis copilot.
+
+You will analyze the following content in ONE global pass (quick mode).
+Focus on how the reasoning is structured, not on political or ideological alignment.
+
+CONTENT BEGIN
+----------------
+{transcript_text}
+----------------
+CONTENT END
+
+Return a concise report in Markdown with EXACTLY these numbered headings
+and in this order. KEEP EACH SECTION SHORTER THAN THE FULL VERSION:
+
+# 1. Full-Lesson Reasoning Summary
+- 2–4 short paragraphs explaining the main argument(s) and overall reasoning quality.
+- Mention the most important reasoning strengths and weaknesses only.
+
+# 2. Master Fallacy & Bias Map
+- A compact list of the most notable logical fallacies (name + 1–2 line explanation).
+- A compact list of the most notable cognitive biases.
+- A compact list of the most notable rhetorical / persuasion tactics.
+- Keep each item to a single bullet per pattern.
+
+# 3. Rationality Profile for the Entire Segment
+- 1 short paragraph on strengths.
+- 1 short paragraph on weaknesses.
+- Then a short list of 4–6 dimensions
+  (e.g., Evidence use, Causal reasoning, Emotional framing, Fairness/balance)
+  with 1–5 ratings.
+- At the very end of this section, add a standalone line in this exact format:
+  "Overall reasoning score: NN/100"
+
+# 4. Condensed Investor-Facing Summary
+- 2–4 short paragraphs describing:
+  - What the content is about (1–2 sentences).
+  - What MindPilot found (main fallacies/biases/persuasion patterns,
+    overall rationality level).
+  - Why this demonstrates the value of MindPilot as a product.
+
+# 5. Critical Thinking Questions to Ask Yourself
+- 4–8 neutral, practical questions a reader could ask
+  to think more clearly about this content.
+""".strip()
 
 def run_analysis_from_transcript(
     transcript_text: str,
@@ -141,6 +193,80 @@ def run_full_analysis_from_article(article_url: str) -> str:
     return run_full_analysis_from_text(
         raw_text=article_text,
         source_label=article_url,
+    )
+def run_quick_analysis_from_text(
+    raw_text: str,
+    source_label: str = "Pasted text",
+    include_grok: bool = False,
+) -> str:
+    """
+    Quick mode for arbitrary text:
+    - one global scan
+    - no chunk-level deep dive
+    - Grok disabled by default (1 OpenAI call only)
+    """
+    transcript_text = raw_text.strip()
+    if not transcript_text:
+        raise ValueError("No text provided for analysis (quick mode).")
+
+    quick_prompt = build_quick_global_prompt(transcript_text)
+    quick_global_report = run_mindpilot_analysis(quick_prompt)
+
+    # Optional Grok enrichment (default off for cost)
+    grok_insights = ""
+    if include_grok:
+        label = source_label or "Pasted text"
+        try:
+            grok_insights = run_grok_enrichment(label, quick_global_report)
+        except Exception as e:
+            logging.warning(f"[Quick] Grok enrichment failed: {e}")
+            grok_insights = ""
+
+    # Use the same HTML template; no chunk cards, just global overview.
+    html = build_html_report(
+        source_url=source_label or "Pasted text",
+        video_id=source_label or "N/A",
+        total_chunks=0,
+        chunk_analyses=[],
+        global_report=quick_global_report,
+        grok_insights=grok_insights,
+    )
+    return html
+
+
+def run_quick_analysis_from_youtube(
+    youtube_url: str,
+    include_grok: bool = False,
+) -> str:
+    """
+    Quick mode for YouTube:
+    - fetch + clean transcript
+    - one global scan
+    - no chunk cards, no Grok by default
+    """
+    video_id = extract_video_id(youtube_url)
+    transcript_text = fetch_transcript_text(video_id)
+    transcript_text = clean_transcript_text(transcript_text)
+
+    return run_quick_analysis_from_text(
+        raw_text=transcript_text,
+        source_label=youtube_url,
+        include_grok=include_grok,
+    )
+
+
+def run_quick_analysis_from_article(
+    article_url: str,
+    include_grok: bool = False,
+) -> str:
+    """
+    Quick mode for article URLs.
+    """
+    article_text = fetch_article_text(article_url)
+    return run_quick_analysis_from_text(
+        raw_text=article_text,
+        source_label=article_url,
+        include_grok=include_grok,
     )
 
 AD_PHRASES = [
