@@ -424,6 +424,96 @@ Here are your chunk-level analyses to base this on:
 """
     return prompt.strip()
 
+import re  # if not already imported
+
+
+def build_social_card_html(
+    *,
+    source_type: str,
+    overall_score_100: int | None,
+    score_label: str,
+    fallacy_snippet: str,
+    questions_snippet: str,
+    grok_line: str | None,
+    report_url: str | None,
+    escape_html,
+) -> str:
+    """
+    Build a compact 'social card' HTML block that can be screenshotted
+    for posts on X/Twitter, LinkedIn, TikTok, etc.
+
+    - source_type: 'YouTube video', 'Article / web page', etc.
+    - overall_score_100: 0–100, or None if we didn't parse a score
+    - score_label: human-readable label (e.g. 'Mixed / uneven reasoning')
+    - fallacy_snippet: short text (1–2 items) summarizing fallacies/biases
+    - questions_snippet: short text summarizing questions to ask
+    - grok_line: optional one-line 'Grok enrichment' summary
+    - report_url: public URL for the full report (can be None for now)
+    - escape_html: function to escape arbitrary text for HTML
+    """
+
+    # Title: keep it soft, not cocky
+    header_title = f"Reasoning snapshot for this {source_type.lower()}"
+
+    if overall_score_100 is None:
+        score_display = "Reasoning snapshot"
+        bar_width = 100
+        bar_caption = score_label or "Reasoning profile overview"
+    else:
+        score_display = f"{overall_score_100}/100"
+        bar_width = overall_score_100
+        bar_caption = f"{overall_score_100}/100 · {score_label}"
+
+    fallacy_text = fallacy_snippet.strip() if fallacy_snippet else "Key fallacy and bias signals highlighted in the full report."
+    questions_text = questions_snippet.strip() if questions_snippet else "See the full report for critical questions to stress-test this piece."
+    grok_text = (grok_line or "").strip()
+
+    if report_url:
+        footer_left = f"Full Cognitive Flight Report → {escape_html(report_url)}"
+    else:
+        footer_left = "Full Cognitive Flight Report available in the MindPilot app."
+
+    return f"""
+      <section class="card-sub social-card">
+        <div class="social-header">
+          <div class="social-title">{escape_html(header_title)}</div>
+          <div class="social-logo">
+            <!-- Adjust path if needed for your deployed assets -->
+            <img src="/assets/mindpilot-symbol.png" alt="MindPilot symbol" />
+          </div>
+        </div>
+
+        <div class="social-score-row">
+          <div class="social-score-number">{escape_html(score_display)}</div>
+          <div class="score-bar-track">
+            <div class="score-bar-fill" style="width: {bar_width}%;"></div>
+          </div>
+          <div class="score-bar-label">{escape_html(bar_caption)}</div>
+        </div>
+
+        <div class="social-grid">
+          <div>
+            <div class="social-label">Fallacies &amp; bias signals</div>
+            <p class="social-text">{escape_html(fallacy_text)}</p>
+          </div>
+          <div>
+            <div class="social-label">Questions to ask</div>
+            <p class="social-text">{escape_html(questions_text)}</p>
+          </div>
+        </div>
+    """ + (
+        f"""
+        <div class="social-grok">
+          Grok enrichment: {escape_html(grok_text)}
+        </div>
+    """ if grok_text else ""
+    ) + f"""
+        <div class="social-footer">
+          <span>{footer_left}</span>
+          <span class="social-watermark">MindPilot · Cognitive Flight Report</span>
+        </div>
+      </section>
+    """
 
 
 def build_html_report(
@@ -665,6 +755,56 @@ def build_html_report(
         """
     else:
         grok_card_html = ""
+
+    # ----- Build a compact social card from global sections -----
+
+    def first_bullets_from_markdown(md: str, max_items: int = 2) -> str:
+        """
+        Grab up to `max_items` bullet lines from a markdown block and
+        flatten them into a short sentence. Used for fallacy/question snippets.
+        """
+        if not md:
+            return ""
+        bullets = re.findall(r"^\s*[-*•]\s+(.*)", md, flags=re.MULTILINE)
+        items = [b.strip() for b in bullets if b.strip()]
+        return " • ".join(items[:max_items])
+
+    # 1–2-item summaries from the Master Map & Questions sections
+    fallacy_snippet = first_bullets_from_markdown(master_map, max_items=2)
+    questions_snippet = first_bullets_from_markdown(questions_block, max_items=2)
+
+    # Reuse the label we already computed for the score, if we have one
+    if overall_score_100 is not None:
+        score_label = label  # from the overall_score_100 banding logic above
+    else:
+        score_label = "Reasoning profile overview"
+
+    # One-line Grok teaser (first non-empty line)
+    grok_line = ""
+    if grok_insights:
+        for line in grok_insights.splitlines():
+            line = line.strip()
+            if line:
+                grok_line = line
+                break
+
+    # TODO: once we implement report IDs, pass a real URL here
+    report_url = None
+
+    # If you've already defined build_social_card_html at module level,
+    # this will build the graphical social card HTML. If not, you can
+    # comment this out until we add that helper.
+    # social_card_html = build_social_card_html(
+    #     source_type=source_type,
+    #     overall_score_100=overall_score_100,
+    #     score_label=score_label,
+    #     fallacy_snippet=fallacy_snippet,
+    #     questions_snippet=questions_snippet,
+    #     grok_line=grok_line,
+    #     report_url=report_url,
+    #     escape_html=escape_html,
+    # )
+
 
     # ----- HTML skeleton -----
     html = f"""<!DOCTYPE html>
@@ -925,6 +1065,78 @@ def build_html_report(
       color: var(--text-muted);
       margin-bottom: 0.2rem;
     }}
+        .social-card {{
+      margin-top: 0.5rem;
+    }}
+    .social-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }}
+    .social-title {{
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--dark-navy);
+    }}
+    .social-logo img {{
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+    }}
+    .social-score-row {{
+      margin-top: 0.6rem;
+      margin-bottom: 0.5rem;
+    }}
+    .social-score-number {{
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--dark-navy);
+      margin-bottom: 0.25rem;
+    }}
+    .social-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.6rem;
+      margin-top: 0.4rem;
+    }}
+    @media (max-width: 640px) {{
+      .social-grid {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+    .social-label {{
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 0.15rem;
+    }}
+    .social-text {{
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin: 0;
+    }}
+    .social-grok {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 0.55rem;
+      font-style: italic;
+    }}
+    .social-footer {{
+      margin-top: 0.7rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }}
+    .social-watermark {{
+      opacity: 0.75;
+      white-space: nowrap;
+    }}
+
   </style>
 </head>
 <body>
