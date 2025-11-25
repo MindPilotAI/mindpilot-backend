@@ -108,12 +108,13 @@ def run_analysis_from_transcript(
 
     # 4) Build HTML
     final_html = build_html_report(
-        youtube_url or source_label or "",  # source_url
-        video_id or source_label or "N/A",  # video_id
-        total_chunks,                       # total_chunks
-        chunk_analyses,                     # chunk_analyses
-        global_report,                      # global_report
-        grok_insights,                      # NEW: Grok enrichment
+        youtube_url or source_label or "",
+        video_id or source_label or "N/A",
+        total_chunks,
+        chunk_analyses,
+        global_report,
+        grok_insights,
+        depth="full",
     )
 
     return final_html

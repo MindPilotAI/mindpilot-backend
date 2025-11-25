@@ -433,12 +433,9 @@ def build_html_report(
     chunk_analyses,
     global_report,
     grok_insights: str | None = None,
+    depth: str = "full",  # "quick" or "full"
 ):
-
-    """
-    Build a structured HTML report for MindPilot analyses with
-    top-level overview, master fallacy/bias map, and deeper sections.
-    """
+    import re
 
     def escape_html(text: str) -> str:
         return (
@@ -446,18 +443,32 @@ def build_html_report(
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
         )
-    # --- defaults so linters don't complain ---
-    dimension_bars_html = ""
-    # Try to split the global report into its major sections
+
+    def infer_source_type(url: str) -> str:
+        if not url:
+            return "Pasted text / transcript"
+        lower = url.lower()
+        if "youtube.com" in lower or "youtu.be" in lower:
+            return "YouTube video"
+        if lower.startswith("http://") or lower.startswith("https://"):
+            return "Article / web page"
+        return "Pasted text / transcript"
+
+    def depth_label(depth_value: str) -> str:
+        dv = (depth_value or "").strip().lower()
+        if dv == "quick":
+            return "Quick scan (single-pass global profile)"
+        return "Full analysis (section-level scans + global summary)"
+
+    # ----- split global report into sections -----
     full_summary = ""
     master_map = ""
     rationality_profile = ""
     investor_summary = ""
-    questions_block = ""  # 🔹 add this line
+    questions_block = ""
 
     if global_report:
         raw = global_report
-
         headings = [
             ("full", "# 1. Full-Lesson Reasoning Summary"),
             ("map", "# 2. Master Fallacy & Bias Map"),
@@ -465,28 +476,24 @@ def build_html_report(
             ("investor", "# 4. Condensed Investor-Facing Summary"),
             ("questions", "# 5. Critical Thinking Questions to Ask Yourself"),
         ]
-
         found = []
         for key, heading in headings:
             idx = raw.find(heading)
             if idx != -1:
                 found.append((key, idx, heading))
-
         if found:
             found.sort(key=lambda x: x[1])
             sections = {}
             for i, (key, idx, heading) in enumerate(found):
                 start = idx
-                end = found[i+1][1] if i + 1 < len(found) else len(raw)
+                end = found[i + 1][1] if i + 1 < len(found) else len(raw)
                 sections[key] = raw[start:end].strip()
-
             full_summary = sections.get("full", "")
             master_map = sections.get("map", "")
             rationality_profile = sections.get("profile", "")
             investor_summary = sections.get("investor", "")
             questions_block = sections.get("questions", "")
 
-    # Escape chunk analyses for HTML
     escaped_chunks = [escape_html(a) for a in chunk_analyses]
 
     esc_full = escape_html(full_summary) if full_summary else ""
@@ -496,11 +503,11 @@ def build_html_report(
     esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
     esc_grok = escape_html(grok_insights) if grok_insights else ""
-    # --- Parse dimension-level 1–5 ratings from the rationality profile ---
+
+    # ----- dimension bars from Rationality Profile -----
     dimension_bars_html = ""
     if rationality_profile:
         dimension_scores = []
-        # Expect lines like: "Evidence use: 4/5 – explanation"
         for match in re.finditer(
             r"^\s*[-•]?\s*([A-Za-z][A-Za-z\s/]+?):\s*([1-5])\s*/\s*5\b",
             rationality_profile,
@@ -513,7 +520,6 @@ def build_html_report(
                 continue
             if 1 <= dim_score <= 5:
                 dimension_scores.append((dim_name, dim_score))
-
         if dimension_scores:
             rows = []
             for dim_name, dim_score in dimension_scores:
@@ -533,16 +539,14 @@ def build_html_report(
         </div>
         """
 
-    # --- Try to parse an overall rationality score (0–100) from the profile ---
+    # ----- overall score -----
     overall_score_100: int | None = None
     if rationality_profile:
-        # Preferred: a line like "Overall reasoning score: 74/100"
         score_match = re.search(
             r"(?i)overall reasoning score\s*:\s*([0-9]{1,3})\s*/\s*100",
             rationality_profile,
         )
         if not score_match:
-            # Fallback: anything like "score ... 74/100"
             score_match = re.search(
                 r"(?i)score[^0-9]{0,80}([0-9]{1,3})\s*/\s*100",
                 rationality_profile,
@@ -557,7 +561,6 @@ def build_html_report(
 
     score_chip_html = ""
     score_bar_html = ""
-
     if overall_score_100 is not None:
         band = overall_score_100
         if band < 25:
@@ -570,13 +573,11 @@ def build_html_report(
             label = "Generally strong reasoning"
         else:
             label = "Very strong reasoning"
-
         score_chip_html = f"""
         <div class="pill-row">
           <div class="pill"><strong>Overall reasoning score:</strong> {overall_score_100}/100 · {label}</div>
         </div>
         """
-
         score_bar_html = f"""
         <div class="score-bar-container">
           <div class="score-bar-track">
@@ -586,7 +587,60 @@ def build_html_report(
         </div>
         """
 
-    # Flag if we have anything global-ish to show
+    # ----- meta + social snippet prep -----
+    source_type = infer_source_type(source_url or "")
+    depth_text = depth_label(depth)
+
+    def extract_summary_body(md_section: str) -> str:
+        if not md_section:
+            return ""
+        lines = md_section.splitlines()
+        if lines and lines[0].lstrip().startswith("#"):
+            lines = lines[1:]
+        clean_lines = [ln.strip() for ln in lines if ln.strip()]
+        text = " ".join(clean_lines)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    summary_body = extract_summary_body(full_summary)
+    preview = summary_body
+    if len(preview) > 220:
+        preview = preview[:220].rstrip() + "…"
+
+    readable_score = (
+        f"{overall_score_100}/100" if overall_score_100 is not None else "a mixed reasoning profile"
+    )
+    base_line = f"MindPilot Cognitive Flight Report on this {source_type}"
+
+    if preview:
+        core_takeaway = preview
+    else:
+        core_takeaway = (
+            "MindPilot flagged key reasoning patterns, fallacies, and bias signals in this piece."
+        )
+
+    twitter_snippet = (
+        f"{base_line}: reasoning score {readable_score}. "
+        f"{core_takeaway} #MindPilot #CriticalThinking"
+    )
+    tiktok_snippet = (
+        f"This {source_type.lower()} just got MindPiloted. 🛩️\n"
+        f"Reasoning score: {readable_score}.\n"
+        "MindPilot mapped fallacies, bias patterns, and rhetorical pressure so you don't have to.\n"
+        "Full Cognitive Flight Report at mind-pilot.ai"
+    )
+    linkedin_snippet = (
+        f"Today's MindPilot Cognitive Flight Report evaluates the reasoning quality of a {source_type.lower()}.\n"
+        f"Reasoning score: {readable_score}.\n"
+        f"{core_takeaway}\n"
+        "MindPilot surfaces argument structure, fallacies, bias patterns, and critical questions to help professionals think more clearly."
+    )
+
+    esc_twitter_snippet = escape_html(twitter_snippet)
+    esc_tiktok_snippet = escape_html(tiktok_snippet)
+    esc_linkedin_snippet = escape_html(linkedin_snippet)
+
+    # ----- global presence flag -----
     has_any_global = any([
         esc_profile,
         esc_full,
@@ -596,7 +650,7 @@ def build_html_report(
         bool(esc_grok),
     ])
 
-    # Grok card (used inside the global card if present)
+    # Grok card
     if esc_grok:
         grok_card_html = f"""
         <section class="card-sub">
@@ -612,8 +666,7 @@ def build_html_report(
     else:
         grok_card_html = ""
 
-
-
+    # ----- HTML skeleton -----
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -704,6 +757,16 @@ def build_html_report(
       margin: 0;
       color: var(--text-muted);
     }}
+        .social-snippet {{
+      margin-top: 0.6rem;
+      margin-bottom: 0.6rem;
+    }}
+    .social-label {{
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.2rem;
+    }}
     .chunk-card {{
       border-radius: 1rem;
       border: 1px solid var(--border-subtle);
@@ -788,13 +851,13 @@ def build_html_report(
       font-size: 0.8rem;
       color: var(--text-muted);
     }}
-.fallacy-pre {{
-  overflow-x: auto;
-  white-space: pre;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 
-               "Liberation Mono", "Courier New", monospace;
-  font-size: 0.8rem;
-}}
+    .fallacy-pre {{
+      overflow-x: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                   "Liberation Mono", "Courier New", monospace;
+      font-size: 0.8rem;
+    }}
     .score-bar-container {{
       margin: 0.4rem 0;
     }}
@@ -816,7 +879,7 @@ def build_html_report(
       font-size: 0.78rem;
       color: var(--text-muted);
     }}
-        .dimension-bars {{
+    .dimension-bars {{
       margin-top: 0.4rem;
     }}
     .dimension-row {{
@@ -852,8 +915,17 @@ def build_html_report(
       min-width: 2.5rem;
       text-align: right;
     }}
-
-</style>
+    .social-snippet {{
+      margin-top: 0.6rem;
+      margin-bottom: 0.6rem;
+    }}
+    .social-label {{
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.2rem;
+    }}
+  </style>
 </head>
 <body>
   <div class="page">
@@ -863,7 +935,7 @@ def build_html_report(
     </header>
 """
 
-    # Top-level Global / Rationality Profile card
+    # ----- Global card + subcards -----
     if has_any_global:
         html += f"""
     <section class="card">
@@ -876,16 +948,12 @@ def build_html_report(
         {score_chip_html}
         {score_bar_html}
         <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
-          <li><strong>Content type:</strong> Article / written piece</li>
-          <li><strong>Focus:</strong> Legal reasoning around prosecutions and judicial independence</li>
-          <li><strong>Depth:</strong> Section-level scans + global summary + Grok live context</li>
+          <li><strong>Source type:</strong> {escape_html(source_type)}</li>
+          <li><strong>Sections analyzed:</strong> {total_chunks}</li>
+          <li><strong>Analysis mode:</strong> {escape_html(depth_text)}</li>
         </ul>
       </div>
-
-
-        """
-
-        # 1) Full-lesson summary
+"""
         if esc_full:
             html += f"""
       <section class="card-sub">
@@ -897,9 +965,7 @@ def build_html_report(
           <pre class="pre-block">{esc_full}</pre>
         </div>
       </section>
-            """
-
-        # 2) Master fallacy & bias map
+"""
         if esc_map:
             html += f"""
       <section class="card-sub">
@@ -911,9 +977,7 @@ def build_html_report(
           <pre class="pre-block">{esc_map}</pre>
         </div>
       </section>
-            """
-
-        # 3) Rationality profile for the entire segment
+"""
         if esc_profile:
             html += f"""
       <section class="card-sub">
@@ -926,9 +990,7 @@ def build_html_report(
           <pre class="pre-block">{esc_profile}</pre>
         </div>
       </section>
-            """
-
-        # 4) Condensed investor-facing summary
+"""
         if esc_investor:
             html += f"""
       <section class="card-sub">
@@ -940,9 +1002,7 @@ def build_html_report(
           <pre class="pre-block">{esc_investor}</pre>
         </div>
       </section>
-            """
-
-        # 5) Critical thinking questions
+"""
         if esc_questions:
             html += f"""
       <section class="card-sub">
@@ -954,18 +1014,39 @@ def build_html_report(
           <pre class="pre-block">{esc_questions}</pre>
         </div>
       </section>
-            """
-
-        # 6) Grok enrichment (if present)
+"""
         html += grok_card_html
 
-        # Close the global card wrapper
-        html += """
-    </section>
-        """
+        # Social snippet drafts card
+        html += f"""
+      <section class="card-sub">
+        <div class="card-title">Social Snippet Drafts</div>
+        <div class="card-body">
+          <p class="card-body-text">
+            Copy and lightly edit these for your MindPilot social posts. They’re
+            auto-tailored to this Cognitive Flight Report and meant for your
+            own accounts (X/Twitter, TikTok/Shorts, LinkedIn).
+          </p>
 
+          <div class="social-snippet">
+            <div class="social-label">X / Twitter</div>
+            <pre class="pre-block">{esc_twitter_snippet}</pre>
+          </div>
+
+          <div class="social-snippet">
+            <div class="social-label">TikTok / Shorts caption</div>
+            <pre class="pre-block">{esc_tiktok_snippet}</pre>
+          </div>
+
+          <div class="social-snippet">
+            <div class="social-label">LinkedIn post intro</div>
+            <pre class="pre-block">{esc_linkedin_snippet}</pre>
+          </div>
+        </div>
+      </section>
+    </section>
+"""
     elif esc_global_fallback:
-        # Fallback: show the whole global report as a single block
         html += f"""
     <section class="card">
       <div class="card-title">Global MindPilot Reasoning Overview</div>
@@ -973,7 +1054,7 @@ def build_html_report(
         <pre class="pre-block">{esc_global_fallback}</pre>
       </div>
     </section>
-        """
+"""
 
     # Disclaimer card
     html += """
@@ -992,12 +1073,11 @@ def build_html_report(
     </section>
 """
 
-    # Chunk-level / Section-level Deep Dive
+    # Section-level deep dive
     html += """
     <section>
       <div class="section-heading">Section-Level Deep Dive</div>
 """
-
     for i, text in enumerate(escaped_chunks):
         html += f"""
       <article class="chunk-card">
@@ -1010,8 +1090,7 @@ def build_html_report(
         </div>
       </article>
 """
-
-    # Footer with meta & tags
+    # Footer
     html += f"""
     </section>
 
@@ -1183,6 +1262,7 @@ def main():
         total_chunks=total_chunks,
         chunk_analyses=chunk_analyses,
         global_report=global_report,
+        depth="full",
     )
     html_path = "mindpilot_report.html"
     with open(html_path, "w", encoding="utf-8") as hf:
