@@ -1264,7 +1264,6 @@ def build_html_report(
 """
     return html
 
-
 # ---------- MAIN PIPELINE ----------
 
 def main():

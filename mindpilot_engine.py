@@ -1,9 +1,9 @@
 # mindpilot_engine.py
-
+import re
 from typing import List
 
 import logging
-import re
+
 
 import httpx
 from bs4 import BeautifulSoup
