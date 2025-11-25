@@ -424,7 +424,6 @@ Here are your chunk-level analyses to base this on:
 """
     return prompt.strip()
 
-import re  # if not already imported
 
 
 def build_social_card_html(
@@ -525,9 +524,25 @@ def build_html_report(
     grok_insights: str | None = None,
     depth: str = "full",  # "quick" or "full"
 ):
-    import re
+    """
+    Build the MindPilot Cognitive Flight Report HTML.
+
+    - Splits the global_report into:
+        1) Full-Lesson Reasoning Summary
+        2) Master Fallacy & Bias Map
+        3) Rationality Profile
+        4) Investor-Facing Summary
+        5) Critical Thinking Questions
+    - Derives an overall 0–100 score and per-dimension 1–5 bars.
+    - Includes Grok context if provided.
+    - Generates social text snippets for X / TikTok / LinkedIn.
+    """
+
+    # ---------- helpers ----------
 
     def escape_html(text: str) -> str:
+        if text is None:
+            return ""
         return (
             text.replace("&", "&amp;")
                 .replace("<", "&lt;")
@@ -550,7 +565,23 @@ def build_html_report(
             return "Quick scan (single-pass global profile)"
         return "Full analysis (section-level scans + global summary)"
 
-    # ----- split global report into sections -----
+    def extract_summary_body(md_section: str) -> str:
+        """
+        Take a markdown section, drop the heading line if present,
+        flatten to a single paragraph.
+        """
+        if not md_section:
+            return ""
+        lines = md_section.splitlines()
+        if lines and lines[0].lstrip().startswith("#"):
+            lines = lines[1:]
+        clean_lines = [ln.strip() for ln in lines if ln.strip()]
+        text = " ".join(clean_lines)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    # ---------- split global_report into sections ----------
+
     full_summary = ""
     master_map = ""
     rationality_profile = ""
@@ -571,6 +602,7 @@ def build_html_report(
             idx = raw.find(heading)
             if idx != -1:
                 found.append((key, idx, heading))
+
         if found:
             found.sort(key=lambda x: x[1])
             sections = {}
@@ -578,11 +610,14 @@ def build_html_report(
                 start = idx
                 end = found[i + 1][1] if i + 1 < len(found) else len(raw)
                 sections[key] = raw[start:end].strip()
+
             full_summary = sections.get("full", "")
             master_map = sections.get("map", "")
             rationality_profile = sections.get("profile", "")
             investor_summary = sections.get("investor", "")
             questions_block = sections.get("questions", "")
+
+    # ---------- escape chunk analyses ----------
 
     escaped_chunks = [escape_html(a) for a in chunk_analyses]
 
@@ -594,7 +629,8 @@ def build_html_report(
     esc_global_fallback = escape_html(global_report) if (global_report and not esc_full) else ""
     esc_grok = escape_html(grok_insights) if grok_insights else ""
 
-    # ----- dimension bars from Rationality Profile -----
+    # ---------- dimension bars from Rationality Profile ----------
+
     dimension_bars_html = ""
     if rationality_profile:
         dimension_scores = []
@@ -610,11 +646,13 @@ def build_html_report(
                 continue
             if 1 <= dim_score <= 5:
                 dimension_scores.append((dim_name, dim_score))
+
         if dimension_scores:
             rows = []
             for dim_name, dim_score in dimension_scores:
                 width_pct = int(round(dim_score / 5 * 100))
-                rows.append(f"""
+                rows.append(
+                    f"""
           <div class="dimension-row">
             <div class="dimension-label">{escape_html(dim_name)}</div>
             <div class="dimension-track">
@@ -622,15 +660,23 @@ def build_html_report(
             </div>
             <div class="dimension-score">{dim_score}/5</div>
           </div>
-            """)
-            dimension_bars_html = """
+            """
+                )
+            dimension_bars_html = (
+                """
         <div class="dimension-bars">
-        """ + "".join(rows) + """
+        """
+                + "".join(rows)
+                + """
         </div>
         """
+            )
 
-    # ----- overall score -----
+    # ---------- overall 0–100 score ----------
+
     overall_score_100: int | None = None
+    label_for_chip = ""
+
     if rationality_profile:
         score_match = re.search(
             r"(?i)overall reasoning score\s*:\s*([0-9]{1,3})\s*/\s*100",
@@ -651,21 +697,23 @@ def build_html_report(
 
     score_chip_html = ""
     score_bar_html = ""
+
     if overall_score_100 is not None:
         band = overall_score_100
         if band < 25:
-            label = "Very low reasoning quality"
+            label_for_chip = "Very low reasoning quality"
         elif band < 45:
-            label = "Low / fragile reasoning"
+            label_for_chip = "Low / fragile reasoning"
         elif band < 65:
-            label = "Mixed / uneven reasoning"
+            label_for_chip = "Mixed / uneven reasoning"
         elif band < 85:
-            label = "Generally strong reasoning"
+            label_for_chip = "Generally strong reasoning"
         else:
-            label = "Very strong reasoning"
+            label_for_chip = "Very strong reasoning"
+
         score_chip_html = f"""
         <div class="pill-row">
-          <div class="pill"><strong>Overall reasoning score:</strong> {overall_score_100}/100 · {label}</div>
+          <div class="pill"><strong>Overall reasoning score:</strong> {overall_score_100}/100 · {label_for_chip}</div>
         </div>
         """
         score_bar_html = f"""
@@ -677,20 +725,10 @@ def build_html_report(
         </div>
         """
 
-    # ----- meta + social snippet prep -----
+    # ---------- meta + social text snippets ----------
+
     source_type = infer_source_type(source_url or "")
     depth_text = depth_label(depth)
-
-    def extract_summary_body(md_section: str) -> str:
-        if not md_section:
-            return ""
-        lines = md_section.splitlines()
-        if lines and lines[0].lstrip().startswith("#"):
-            lines = lines[1:]
-        clean_lines = [ln.strip() for ln in lines if ln.strip()]
-        text = " ".join(clean_lines)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
 
     summary_body = extract_summary_body(full_summary)
     preview = summary_body
@@ -714,7 +752,7 @@ def build_html_report(
         f"{core_takeaway} #MindPilot #CriticalThinking"
     )
     tiktok_snippet = (
-        f"This {source_type.lower()} just got MindPiloted. 🛩️\n"
+        f"This {source_type.lower()} just got a MindPilot Cognitive Flight Report.\n"
         f"Reasoning score: {readable_score}.\n"
         "MindPilot mapped fallacies, bias patterns, and rhetorical pressure so you don't have to.\n"
         "Full Cognitive Flight Report at mind-pilot.ai"
@@ -723,90 +761,44 @@ def build_html_report(
         f"Today's MindPilot Cognitive Flight Report evaluates the reasoning quality of a {source_type.lower()}.\n"
         f"Reasoning score: {readable_score}.\n"
         f"{core_takeaway}\n"
-        "MindPilot surfaces argument structure, fallacies, bias patterns, and critical questions to help professionals think more clearly."
+        "MindPilot surfaces argument structure, fallacies, bias patterns, and critical questions "
+        "to help professionals think more clearly."
     )
 
     esc_twitter_snippet = escape_html(twitter_snippet)
     esc_tiktok_snippet = escape_html(tiktok_snippet)
     esc_linkedin_snippet = escape_html(linkedin_snippet)
 
-    # ----- global presence flag -----
-    has_any_global = any([
-        esc_profile,
-        esc_full,
-        esc_map,
-        esc_questions,
-        esc_investor,
-        bool(esc_grok),
-    ])
+    # ---------- global presence flag & Grok card ----------
 
-    # Grok card
+    has_any_global = any(
+        [
+            esc_profile,
+            esc_full,
+            esc_map,
+            esc_questions,
+            esc_investor,
+            bool(esc_grok),
+        ]
+    )
+
     if esc_grok:
         grok_card_html = f"""
-        <section class="card-sub">
-          <div class="collapsible-header" onclick="toggleSection('grok-card')">
-            <span>MindPilot × Grok Live Context & Creative Debrief</span>
-            <span class="collapsible-toggle" id="toggle-grok-card">Show</span>
-          </div>
-          <div class="collapsible-body" id="section-grok-card">
-            <pre class="pre-block">{esc_grok}</pre>
-          </div>
-        </section>
-        """
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('grok-card')">
+          <span>MindPilot × Grok Live Context &amp; Creative Debrief</span>
+          <span class="collapsible-toggle" id="toggle-grok-card">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-grok-card">
+          <pre class="pre-block">{esc_grok}</pre>
+        </div>
+      </section>
+"""
     else:
         grok_card_html = ""
 
-    # ----- Build a compact social card from global sections -----
+    # ---------- HTML skeleton ----------
 
-    def first_bullets_from_markdown(md: str, max_items: int = 2) -> str:
-        """
-        Grab up to `max_items` bullet lines from a markdown block and
-        flatten them into a short sentence. Used for fallacy/question snippets.
-        """
-        if not md:
-            return ""
-        bullets = re.findall(r"^\s*[-*•]\s+(.*)", md, flags=re.MULTILINE)
-        items = [b.strip() for b in bullets if b.strip()]
-        return " • ".join(items[:max_items])
-
-    # 1–2-item summaries from the Master Map & Questions sections
-    fallacy_snippet = first_bullets_from_markdown(master_map, max_items=2)
-    questions_snippet = first_bullets_from_markdown(questions_block, max_items=2)
-
-    # Reuse the label we already computed for the score, if we have one
-    if overall_score_100 is not None:
-        score_label = label  # from the overall_score_100 banding logic above
-    else:
-        score_label = "Reasoning profile overview"
-
-    # One-line Grok teaser (first non-empty line)
-    grok_line = ""
-    if grok_insights:
-        for line in grok_insights.splitlines():
-            line = line.strip()
-            if line:
-                grok_line = line
-                break
-
-    # TODO: once we implement report IDs, pass a real URL here
-    report_url = None
-
-    # If you've already defined build_social_card_html at module level,
-    # this will build the graphical social card HTML. If not, you can
-    # comment this out until we add that helper.
-    # social_card_html = build_social_card_html(
-    #     source_type=source_type,
-    #     overall_score_100=overall_score_100,
-    #     score_label=score_label,
-    #     fallacy_snippet=fallacy_snippet,
-    #     questions_snippet=questions_snippet,
-    #     grok_line=grok_line,
-    #     report_url=report_url,
-    #     escape_html=escape_html,
-    # )
-
-
-    # ----- HTML skeleton -----
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -897,16 +889,6 @@ def build_html_report(
       margin: 0;
       color: var(--text-muted);
     }}
-        .social-snippet {{
-      margin-top: 0.6rem;
-      margin-bottom: 0.6rem;
-    }}
-    .social-label {{
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-bottom: 0.2rem;
-    }}
     .chunk-card {{
       border-radius: 1rem;
       border: 1px solid var(--border-subtle);
@@ -991,13 +973,6 @@ def build_html_report(
       font-size: 0.8rem;
       color: var(--text-muted);
     }}
-    .fallacy-pre {{
-      overflow-x: auto;
-      white-space: pre;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-                   "Liberation Mono", "Courier New", monospace;
-      font-size: 0.8rem;
-    }}
     .score-bar-container {{
       margin: 0.4rem 0;
     }}
@@ -1065,78 +1040,6 @@ def build_html_report(
       color: var(--text-muted);
       margin-bottom: 0.2rem;
     }}
-        .social-card {{
-      margin-top: 0.5rem;
-    }}
-    .social-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.5rem;
-    }}
-    .social-title {{
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--dark-navy);
-    }}
-    .social-logo img {{
-      width: 32px;
-      height: 32px;
-      border-radius: 999px;
-    }}
-    .social-score-row {{
-      margin-top: 0.6rem;
-      margin-bottom: 0.5rem;
-    }}
-    .social-score-number {{
-      font-size: 1.3rem;
-      font-weight: 700;
-      color: var(--dark-navy);
-      margin-bottom: 0.25rem;
-    }}
-    .social-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.6rem;
-      margin-top: 0.4rem;
-    }}
-    @media (max-width: 640px) {{
-      .social-grid {{
-        grid-template-columns: 1fr;
-      }}
-    }}
-    .social-label {{
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-muted);
-      margin-bottom: 0.15rem;
-    }}
-    .social-text {{
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      margin: 0;
-    }}
-    .social-grok {{
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-top: 0.55rem;
-      font-style: italic;
-    }}
-    .social-footer {{
-      margin-top: 0.7rem;
-      display: flex;
-      justify-content: space-between;
-      gap: 0.5rem;
-      font-size: 0.78rem;
-      color: var(--text-muted);
-      flex-wrap: wrap;
-    }}
-    .social-watermark {{
-      opacity: 0.75;
-      white-space: nowrap;
-    }}
-
   </style>
 </head>
 <body>
@@ -1147,7 +1050,8 @@ def build_html_report(
     </header>
 """
 
-    # ----- Global card + subcards -----
+    # ---------- Global card + subcards ----------
+
     if has_any_global:
         html += f"""
     <section class="card">
@@ -1166,6 +1070,7 @@ def build_html_report(
         </ul>
       </div>
 """
+
         if esc_full:
             html += f"""
       <section class="card-sub">
@@ -1178,11 +1083,12 @@ def build_html_report(
         </div>
       </section>
 """
+
         if esc_map:
             html += f"""
       <section class="card-sub">
         <div class="collapsible-header" onclick="toggleSection('master-map')">
-          <span>Master Fallacy & Bias Map</span>
+          <span>Master Fallacy &amp; Bias Map</span>
           <span class="collapsible-toggle" id="toggle-master-map">Show</span>
         </div>
         <div class="collapsible-body" id="section-master-map">
@@ -1190,6 +1096,7 @@ def build_html_report(
         </div>
       </section>
 """
+
         if esc_profile:
             html += f"""
       <section class="card-sub">
@@ -1198,11 +1105,12 @@ def build_html_report(
           <span class="collapsible-toggle" id="toggle-rationality-profile">Show</span>
         </div>
         <div class="collapsible-body" id="section-rationality-profile">
-            {dimension_bars_html}
+          {dimension_bars_html}
           <pre class="pre-block">{esc_profile}</pre>
         </div>
       </section>
 """
+
         if esc_investor:
             html += f"""
       <section class="card-sub">
@@ -1215,6 +1123,7 @@ def build_html_report(
         </div>
       </section>
 """
+
         if esc_questions:
             html += f"""
       <section class="card-sub">
@@ -1227,6 +1136,7 @@ def build_html_report(
         </div>
       </section>
 """
+
         html += grok_card_html
 
         # Social snippet drafts card
@@ -1268,7 +1178,8 @@ def build_html_report(
     </section>
 """
 
-    # Disclaimer card
+    # ---------- Disclaimer card ----------
+
     html += """
     <section class="card-sub">
       <div class="card-title">How to read this report</div>
@@ -1285,7 +1196,8 @@ def build_html_report(
     </section>
 """
 
-    # Section-level deep dive
+    # ---------- Section-level deep dive ----------
+
     html += """
     <section>
       <div class="section-heading">Section-Level Deep Dive</div>
@@ -1302,7 +1214,9 @@ def build_html_report(
         </div>
       </article>
 """
-    # Footer
+
+    # ---------- Footer ----------
+
     html += f"""
     </section>
 
@@ -1350,8 +1264,6 @@ def build_html_report(
 """
     return html
 
-
-# ---------- MAIN PIPELINE ----------
 
 # ---------- MAIN PIPELINE ----------
 
