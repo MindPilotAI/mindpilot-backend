@@ -13,36 +13,34 @@ from mindpilot_llm_client import run_mindpilot_analysis
 
 TRANSCRIPT_FILE = "mindpilot_transcript_output.txt"
 PROMPT_PACK_FILE = "mindpilot_prompt_pack.md"
-MAX_CHARS_PER_CHUNK = 1200  # tweak if you want bigger/smaller chunks
+MAX_CHARS_PER_CHUNK = 2000  # tweak if you want bigger/smaller chunks
 
 
 # ---------- YOUTUBE HELPERS ----------
 
 def extract_video_id(youtube_url: str) -> str:
-    """
-    Extracts the YouTube video ID from various URL formats.
-    Examples:
-    - https://www.youtube.com/watch?v=VIDEOID
-    - https://youtu.be/VIDEOID
-    """
     parsed = urlparse(youtube_url)
 
-    # Case 1: standard watch URL
     if parsed.hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        # watch?v=...
         query = parse_qs(parsed.query)
         if "v" in query:
             return query["v"][0]
 
-    # Case 2: shortened youtu.be URL
+        # shorts/VIDEOID or live/VIDEOID style paths
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) >= 2 and path_parts[0] in {"shorts", "live"}:
+            return path_parts[1]
+
     if parsed.hostname == "youtu.be":
         return parsed.path.lstrip("/")
 
-    # Fallback: try to pull a video-like ID via regex
     match = re.search(r"v=([a-zA-Z0-9_-]{11})", youtube_url)
     if match:
         return match.group(1)
 
     raise ValueError(f"Could not extract video ID from URL: {youtube_url}")
+
 
 
 def fetch_transcript_text(video_id: str) -> str:
@@ -870,15 +868,20 @@ def build_html_report(
         html += f"""
     <section class="card">
       <div class="card-title">Global MindPilot Reasoning Overview</div>
-            <div class="card-body">
+      <div class="card-body">
         <p class="card-body-text">
-          This section pulls together patterns from across the entire piece:
-          reasoning strengths and weaknesses, key fallacy & bias clusters, and
-          an overall rationality profile on a 0–100 scale.
+          Quick read of the whole piece – overall reasoning quality, dominant fallacy &amp; bias patterns,
+          and how emotionally loaded the framing is.
         </p>
         {score_chip_html}
         {score_bar_html}
+        <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
+          <li><strong>Content type:</strong> Article / written piece</li>
+          <li><strong>Focus:</strong> Legal reasoning around prosecutions and judicial independence</li>
+          <li><strong>Depth:</strong> Section-level scans + global summary + Grok live context</li>
+        </ul>
       </div>
+
 
         """
 
@@ -988,58 +991,6 @@ def build_html_report(
       </div>
     </section>
 """
-
-    # Master Fallacy & Bias Map card
-    if esc_map:
-        html += f"""
-    <section class="card-sub">
-      <div class="card-title">Master Fallacy &amp; Bias Map</div>
-      <div class="card-body">
-      <pre class="pre-block fallacy-pre">{esc_map}</pre>
-      </div>
-    </section>
-"""
-
-    # Full-Lesson Summary (collapsible)
-    if esc_full:
-        html += f"""
-    <section class="card-sub">
-      <div class="collapsible-header" onclick="toggleSection('full-summary')">
-        <span>Full-Lesson Reasoning Summary</span>
-        <span class="collapsible-toggle" id="toggle-full-summary">Show</span>
-      </div>
-      <div class="collapsible-body" id="section-full-summary">
-        <pre class="pre-block">{esc_full}</pre>
-      </div>
-    </section>
-"""
-
-    # Investor-facing summary (collapsible)
-    if esc_investor:
-        html += f"""
-    <section class="card-sub">
-      <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-        <span>Condensed Investor-Facing Summary</span>
-        <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
-      </div>
-      <div class="collapsible-body" id="section-investor-summary">
-        <pre class="pre-block">{esc_investor}</pre>
-      </div>
-    </section>
-"""
-        # Critical thinking questions (collapsible)
-        if esc_questions:
-            html += f"""
-        <section class="card-sub">
-          <div class="collapsible-header" onclick="toggleSection('critical-questions')">
-            <span>Critical Thinking Questions to Ask or Research</span>
-            <span class="collapsible-toggle" id="toggle-critical-questions">Show</span>
-          </div>
-          <div class="collapsible-body" id="section-critical-questions">
-            <pre class="pre-block">{esc_questions}</pre>
-          </div>
-        </section>
-    """
 
     # Chunk-level / Section-level Deep Dive
     html += """
