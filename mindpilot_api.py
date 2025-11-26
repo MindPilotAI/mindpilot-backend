@@ -59,7 +59,7 @@ async def analyze(
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
 
-    - mode = "youtube": input_value is a YouTube URL
+    - mode = "YouTube": input_value is a YouTube URL
     - mode = "text":    input_value is a block of text to analyze
     - mode = "article": input_value is a news/article URL
     - depth = "quick" or "full"
@@ -117,15 +117,11 @@ async def analyze(
 
     except Exception as e:
         logging.error("Error in /analyze endpoint", exc_info=True)
-        return JSONResponse(
-            {
-                "status": "error",
-                "message": "MindPilot backend crashed during analysis.",
-                "detail": str(e),
-            },
+        #During development, return the actual error text so we can see what failed
+        return PlainTextResponse(
+            f"MindPilot backend ERROR:\n{str(e)}",
             status_code=500,
         )
-
 
 from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
 

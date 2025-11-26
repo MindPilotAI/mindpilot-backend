@@ -630,14 +630,22 @@ def build_html_report(
         if not block:
             return ""
         patterns = [
+            # Old A–F PoC section subheadings
             r"^###?\s*[A-F1-6][\.)]\s*Local Reasoning Summary.*$",
             r"^###?\s*[A-F1-6][\.)]\s*Logical Fallacies.*$",
             r"^###?\s*[A-F1-6][\.)]\s*Cognitive Biases.*$",
             r"^###?\s*[A-F1-6][\.)]\s*Emotional.*?(Framing|Manipulation|Persuasion).*$",
             r"^###?\s*[A-F1-6][\.)]\s*Clarity\s*&\s*Evidence.*$",
             r"^###?\s*[A-F1-6][\.)]\s*Reflective Questions.*$",
-            r"^##\s*1\.\s*Full-Lesson Reasoning Summary.*$",
+
+            # Old numbered PoC headings we no longer want in the body text
+            r"^#+\s*1\.\s*Full-Lesson Reasoning Summary.*$",
+            r"^#+\s*2\.\s*Master Fallacy\s*&\s*Bias Map.*$",
+            r"^#+\s*3\.\s*Rationality Profile for the Entire Segment.*$",
+            r"^#+\s*4\.\s*Condensed Investor-Facing Summary.*$",
+            r"^#+\s*5\.\s*Critical Thinking Questions to Ask Yourself.*$",
         ]
+
         for pat in patterns:
             block = re.sub(pat, "", block, flags=re.MULTILINE)
         # collapse excess blank lines

@@ -125,8 +125,28 @@ def run_full_analysis_from_youtube(youtube_url: str) -> str:
     End-to-end pipeline for a YouTube URL.
     Returns the HTML report as a string.
     """
-    video_id = extract_video_id(youtube_url)
-    transcript_text = fetch_transcript_text(video_id)
+    try:
+        video_id = extract_video_id(youtube_url)
+    except Exception as e:
+        logging.exception(
+            "[MindPilot] extract_video_id error for URL %s", youtube_url
+        )
+        raise RuntimeError(
+            "I couldn't read that YouTube link. Please double-check the URL, "
+            "or copy the transcript from YouTube and paste the text into MindPilot instead."
+        ) from e
+
+    try:
+        transcript_text = fetch_transcript_text(video_id)
+    except Exception as e:
+        logging.exception(
+            "[MindPilot] fetch_transcript_text error for video_id=%s", video_id
+        )
+        raise RuntimeError(
+            "I couldn't fetch a transcript for that video. "
+            "It may not have an accessible transcript or YouTube may be blocking automated access. "
+            "If captions are visible to you, copy the transcript text and paste it into MindPilot."
+        ) from e
 
     # Clean the transcript before chunking (remove sponsor / housekeeping lines)
     transcript_text = clean_transcript_text(transcript_text)
@@ -137,8 +157,6 @@ def run_full_analysis_from_youtube(youtube_url: str) -> str:
         youtube_url=youtube_url,
         video_id=video_id,
     )
-
-
 
 def run_full_analysis_from_text(raw_text: str, source_label: str = "Pasted text") -> str:
     """
