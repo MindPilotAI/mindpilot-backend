@@ -384,11 +384,16 @@ headings:
 # 3. Rationality Profile for the Entire Segment
 - Create a short overview of reasoning strengths.
 - Create a short overview of reasoning weaknesses.
-- Provide a structured list or table of reasoning dimensions
-  (e.g., Evidence use, Causal reasoning, Emotional framing,
-  Fairness/balance, Motive attribution) with ratings from 1–5.
-- Provide a final overall reasoning score from 1–5.
+- Provide a list of reasoning dimensions with 1–5 ratings in this *exact* line format:
+  - Evidence use: 3/5
+  - Causal reasoning: 2/5
+  - Emotional framing: 4/5
+  - Fairness/balance: 3/5
+  - Motive attribution: 3/5
+- At the very end of this section, add a standalone line in this exact format:
+  Overall reasoning score: NN/100
 - Keep this grounded in your own chunk-level findings.
+
 
 # 4. Condensed Investor-Facing Summary
 - In 3–6 short paragraphs, describe:
@@ -525,6 +530,12 @@ def build_html_report(
     grok_insights: str | None = None,
     depth: str = "full",  # "quick" or "full"
 ):
+    SOCIAL_HANDLES = {
+        "twitter": "@YourHandleHere",  # update once you decide
+        "tiktok": "@YourHandleHere",
+        "linkedin": "MindPilot · Cognitive Flight Report",
+    }
+
     """
     Build the MindPilot Cognitive Flight Report HTML.
 
@@ -791,22 +802,35 @@ def build_html_report(
             "MindPilot flagged key reasoning patterns, fallacies, and bias signals in this piece."
         )
 
+    source_link = source_url or ""
+    tw_handle = SOCIAL_HANDLES.get("twitter", "")
+    tt_handle = SOCIAL_HANDLES.get("tiktok", "")
+    li_handle = SOCIAL_HANDLES.get("linkedin", "")
+
     twitter_snippet = (
         f"{base_line}: reasoning score {readable_score}. "
-        f"{core_takeaway} #MindPilot #CriticalThinking"
+        f"{core_takeaway} "
+        f"Source: {source_link} "
+        f"{tw_handle} #MindPilot #CriticalThinking"
     )
+
     tiktok_snippet = (
         f"This {source_type.lower()} just got a MindPilot Cognitive Flight Report.\n"
         f"Reasoning score: {readable_score}.\n"
+        f"Source: {source_link}\n"
         "MindPilot mapped fallacies, bias patterns, and rhetorical pressure so you don't have to.\n"
-        "Full Cognitive Flight Report at mind-pilot.ai"
+        f"{tt_handle} · Full Cognitive Flight Report at mind-pilot.ai"
     )
+
     linkedin_snippet = (
-        f"Today's MindPilot Cognitive Flight Report evaluates the reasoning quality of a {source_type.lower()}.\n"
+        f"Today's MindPilot Cognitive Flight Report evaluates the reasoning quality of a "
+        f"{source_type.lower()}.\n"
         f"Reasoning score: {readable_score}.\n"
         f"{core_takeaway}\n"
+        f"Source: {source_link}\n"
         "MindPilot surfaces argument structure, fallacies, bias patterns, and critical questions "
-        "to help professionals think more clearly."
+        "to help professionals think more clearly.\n"
+        f"{li_handle}"
     )
 
     esc_twitter_snippet = escape_html(twitter_snippet)
