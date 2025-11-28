@@ -35,7 +35,7 @@ def run_mindpilot_analysis(prompt: str, model: str = "gpt-4o-mini") -> str:
             },
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
+        temperature=0.1,
     )
 
     return response.choices[0].message.content.strip()

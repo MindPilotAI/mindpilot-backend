@@ -690,13 +690,14 @@ def build_html_report(
     if rationality_profile:
         dimension_scores = []
         for match in re.finditer(
-            r"^\s*[-•]?\s*([A-Za-z][A-Za-z\s/]+?):\s*([1-5])\s*/\s*5\b",
-            rationality_profile,
-            flags=re.MULTILINE,
+                r"^\s*[-•]?\s*([A-Za-z][A-Za-z\s/]+?):\s*([1-5](?:\.\d+)?)\s*/\s*5\b",
+                rationality_profile,
+                flags=re.MULTILINE,
         ):
             dim_name = match.group(1).strip()
             try:
-                dim_score = int(match.group(2))
+                dim_score = float(match.group(2))
+
             except ValueError:
                 continue
             if 1 <= dim_score <= 5:
@@ -1142,6 +1143,9 @@ def build_html_report(
             <p class="card-body-text">
               Quick read of the whole piece – overall reasoning quality, dominant fallacy &amp; bias patterns,
               and how emotionally loaded the framing is.
+              In quick mode, MindPilot runs a single global scan. In full mode, it also
+              runs section-level diagnostics, so scores may shift slightly within a
+              small tolerance as the system “thinks harder” about the reasoning.
             </p>
             {score_chip_html}
             {score_bar_html}
