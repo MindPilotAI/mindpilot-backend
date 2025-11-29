@@ -662,6 +662,99 @@ def build_html_report(
         # collapse excess blank lines
         block = re.sub(r"\n{3,}", "\n\n", block)
         return block.strip()
+    def build_fallacy_table(raw_map: str) -> str:
+        """
+        Parse the markdown-style Master Fallacy & Bias Map into an HTML table.
+
+        Expected pattern (your current output):
+
+        - **Logical Fallacies**
+          - **False Cause / Post Hoc**: Implies direct causation... (High)
+
+        - **Cognitive Biases**
+          - **Availability Heuristic**: ... (Medium)
+        """
+        if not raw_map:
+            return ""
+
+        rows: list[tuple[str, str, str, str]] = []
+        current_category: str | None = None
+
+        for line in raw_map.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Category lines: "- **Logical Fallacies**"
+            m_cat = re.match(r"^-\s*\*\*(.+?)\*\*\s*$", stripped)
+            if m_cat:
+                current_category = m_cat.group(1).strip()
+                continue
+
+            # Item lines: "- **Name**: description (High)"
+            m_item = re.match(
+                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\((High|Medium|Low)\))?\s*$",
+                stripped,
+            )
+            if m_item and current_category:
+                name = m_item.group(1).strip()
+                desc = m_item.group(2).strip()
+                severity = (m_item.group(3) or "").strip()
+                rows.append((current_category, name, desc, severity))
+
+        if not rows:
+            return ""
+
+        severity_rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
+
+        # Sort: High → Medium → Low, then by category/name
+        rows.sort(
+            key=lambda r: (
+                severity_rank.get(r[3], 3),
+                r[0].lower(),
+                r[1].lower(),
+            )
+        )
+
+        body_rows = []
+        for category, name, desc, severity in rows:
+            sev_label = severity or "—"
+            sev_class = severity.lower() if severity else "none"
+            body_rows.append(
+                f"""
+          <tr>
+            <td class="fallacy-type">{escape_html(category)}</td>
+            <td class="fallacy-name">{escape_html(name)}</td>
+            <td class="fallacy-desc">{escape_html(desc)}</td>
+            <td class="fallacy-severity">
+              <span class="fallacy-tag {sev_class}">{escape_html(sev_label)}</span>
+            </td>
+          </tr>
+                """
+            )
+
+        table_html = (
+            """
+        <div class="fallacy-table-wrapper">
+          <table class="fallacy-table">
+            <thead>
+              <tr>
+                <th>Pattern type</th>
+                <th>Fallacy / bias</th>
+                <th>How it shows up in this piece</th>
+                <th>Severity</th>
+              </tr>
+            </thead>
+            <tbody>
+            """
+            + "".join(body_rows)
+            + """
+            </tbody>
+          </table>
+        </div>
+        """
+        )
+        return table_html
 
     # Clean global sections
     full_summary = _strip_internal_subheadings(full_summary)
@@ -683,7 +776,8 @@ def build_html_report(
     esc_questions = escape_html(questions_block) if questions_block else ""
     esc_global_fallback = escape_html(global_report_clean) if (global_report and not esc_full) else ""
     esc_grok = escape_html(grok_insights) if grok_insights else ""
-
+    # Build a richer HTML table view of the Master Map if possible
+    fallacy_table_html = build_fallacy_table(master_map)
     # ---------- dimension bars from Rationality Profile ----------
 
     dimension_bars_html = ""
@@ -959,6 +1053,65 @@ def build_html_report(
       color: var(--text-muted);
       line-height: 1.5;
     }}
+        .fallacy-table-wrapper {{
+      margin-top: 0.5rem;
+      overflow-x: auto;
+    }}
+    .fallacy-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }}
+    .fallacy-table th,
+    .fallacy-table td {{
+      padding: 0.35rem 0.4rem;
+      border-bottom: 1px solid var(--border-subtle);
+      vertical-align: top;
+    }}
+    .fallacy-table th {{
+      text-align: left;
+      font-weight: 600;
+      color: var(--dark-navy);
+      background: #F7FAFC;
+    }}
+    .fallacy-type {{
+      white-space: nowrap;
+      font-weight: 500;
+      color: var(--text-muted);
+    }}
+    .fallacy-name {{
+      font-weight: 500;
+      color: var(--dark-navy);
+    }}
+    .fallacy-desc {{
+      color: var(--text-muted);
+    }}
+    .fallacy-severity {{
+      text-align: right;
+    }}
+    .fallacy-tag {{
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      border: 1px solid var(--border-subtle);
+    }}
+    .fallacy-tag.high {{
+      background: rgba(229, 62, 62, 0.08);
+      color: #C53030;
+      border-color: rgba(229, 62, 62, 0.5);
+    }}
+    .fallacy-tag.medium {{
+      background: rgba(236, 201, 75, 0.08);
+      color: #B7791F;
+      border-color: rgba(236, 201, 75, 0.6);
+    }}
+    .fallacy-tag.low {{
+      background: rgba(72, 187, 120, 0.08);
+      color: #2F855A;
+      border-color: rgba(72, 187, 120, 0.5);
+    }}
+
     .pre-block {{
       font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       font-size: 0.84rem;
@@ -1176,7 +1329,7 @@ def build_html_report(
           <section class="card-sub">
             <div class="collapsible-header" onclick="toggleSection('critical-questions')">
               <span>Critical Thinking Questions to Ask Yourself</span>
-              <span class="collapsible-toggle" id="toggle-critical-questions">Show</span>
+              <span class="collapsible-toggle" id="toggle-critical-questions">Hide</span>
             </div>
             <div class="collapsible-body" id="section-critical-questions">
               <pre class="pre-block">{esc_questions}</pre>
@@ -1210,12 +1363,12 @@ def build_html_report(
                   <span class="collapsible-toggle" id="toggle-master-map">Hide</span>
                 </div>
                 <div class="collapsible-body open" id="section-master-map">
-                  <pre class="pre-block">{esc_map}</pre>
+                  {fallacy_table_html or f'<pre class="pre-block">{esc_map}</pre>'}
                 </div>
               </section>
         """
 
-            if esc_investor:
+        if esc_investor:
                 html += f"""
               <section class="card-sub">
                 <div class="collapsible-header" onclick="toggleSection('investor-summary')">
