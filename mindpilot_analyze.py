@@ -1535,9 +1535,9 @@ def build_html_report(
        white-space: nowrap;
      }}
      @media (min-width: 640px) {{
-       .social-grid {
+       .social-grid {{
          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-       }
+       }}
      }}
 
   </style>
