@@ -755,6 +755,79 @@ def build_html_report(
         """
         )
         return table_html
+    def summarize_fallacies_for_social(raw_map: str) -> str:
+        """
+        Build a short, 1–2 item summary like:
+        'False Cause / Post Hoc (High); Appeal to Emotion (High)'
+        for use in the social card.
+        """
+        if not raw_map:
+            return ""
+
+        items: list[tuple[str, str, str]] = []
+        for line in raw_map.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            m_item = re.match(
+                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\((High|Medium|Low)\))?\s*$",
+                stripped,
+            )
+            if not m_item:
+                continue
+            name = m_item.group(1).strip()
+            severity = (m_item.group(3) or "").strip()
+            items.append((name, severity))
+
+        if not items:
+            return ""
+
+        # Prefer High -> Medium -> Low
+        rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
+        items.sort(key=lambda x: rank.get(x[1], 3))
+
+        top = items[:2]
+        parts = []
+        for name, sev in top:
+            if sev:
+                parts.append(f"{name} ({sev})")
+            else:
+                parts.append(name)
+        return "; ".join(parts)
+
+    def summarize_questions_for_social(raw_questions: str) -> str:
+        """
+        Take the global 'Critical Thinking Questions' block and distill
+        1–2 short questions for the social card.
+        """
+        if not raw_questions:
+            return ""
+
+        # Prefer markdown bullet lines
+        bullets = []
+        for line in raw_questions.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- ", "* ")):
+                q = stripped[2:].strip()
+                if q:
+                    bullets.append(q)
+
+        if not bullets:
+            # Fallback: break on sentences
+            sentences = re.split(r"(?<=[.?])\s+", raw_questions)
+            bullets = [s.strip() for s in sentences if s.strip()]
+
+        if not bullets:
+            return ""
+
+        # Take up to 2, trim length
+        selected = []
+        for q in bullets[:2]:
+            if len(q) > 140:
+                q = q[:137].rstrip() + "…"
+            selected.append(q)
+
+        return " · ".join(selected)
 
     # Clean global sections
     full_summary = _strip_internal_subheadings(full_summary)
@@ -778,6 +851,20 @@ def build_html_report(
     esc_grok = escape_html(grok_insights) if grok_insights else ""
     # Build a richer HTML table view of the Master Map if possible
     fallacy_table_html = build_fallacy_table(master_map)
+    # Social-card text snippets (raw)
+    fallacy_snippet = summarize_fallacies_for_social(master_map)
+    questions_snippet = summarize_questions_for_social(questions_block)
+
+    # Optional one-line Grok summary for the card
+    grok_line = ""
+    if grok_insights:
+        for line in grok_insights.splitlines():
+            if line.strip():
+                grok_line = line.strip()
+                if len(grok_line) > 160:
+                    grok_line = grok_line[:157].rstrip() + "…"
+                break
+
     # ---------- dimension bars from Rationality Profile ----------
 
     dimension_bars_html = ""
@@ -878,6 +965,19 @@ def build_html_report(
     # ---------- meta + social text snippets ----------
 
     source_type = infer_source_type(source_url or "")
+    # Build social-card HTML (only if we have at least some signal)
+    social_card_html = ""
+    if (overall_score_100 is not None) or fallacy_snippet or questions_snippet:
+        social_card_html = build_social_card_html(
+            source_type=source_type,
+            overall_score_100=overall_score_100,
+            score_label=label_for_chip or "Reasoning profile overview",
+            fallacy_snippet=fallacy_snippet,
+            questions_snippet=questions_snippet,
+            grok_line=grok_line,
+            report_url=None,  # you can swap in a real public URL later
+            escape_html=escape_html,
+        )
     depth_text = depth_label(depth)
 
     summary_body = extract_summary_body(full_summary)
@@ -1139,10 +1239,15 @@ def build_html_report(
       font-weight: 600;
       color: var(--dark-navy);
     }}
-    .chunk-toggle {{
-      font-size: 0.8rem;
-      color: var(--text-muted);
-    }}
+         .chunk-toggle {{
+       font-size: 0.78rem;
+       color: var(--text-muted);
+       padding: 0.08rem 0.55rem;
+       border-radius: 999px;
+       border: 1px solid rgba(148, 163, 184, 0.55);
+       background: rgba(255, 255, 255, 0.7);
+     }}
+
     .chunk-body {{
       padding: 0.75rem 0.9rem 0.9rem;
       border-top: 1px solid var(--border-subtle);
@@ -1272,18 +1377,183 @@ def build_html_report(
       color: var(--text-muted);
       margin-bottom: 0.2rem;
     }}
+        .social-card {{
+      margin-top: 0.8rem;
+      border-radius: 1rem;
+      border: 1px solid var(--border-subtle);
+      background: linear-gradient(135deg, #0B1B33, #1A365D);
+      color: #E2E8F0;
+      padding: 0.9rem 1rem;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+    }}
+    .social-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.6rem;
+    }}
+    .social-title {{
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #EDF2F7;
+    }}
+    .social-logo img {{
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: block;
+    }}
+    .social-score-row {{
+      margin-bottom: 0.7rem;
+      font-size: 0.78rem;
+    }}
+    .social-score-number {{
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #FBD38D;
+      margin-bottom: 0.25rem;
+    }}
+    .social-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.7rem;
+      margin-bottom: 0.6rem;
+      font-size: 0.78rem;
+    }}
+    @media (max-width: 640px) {{
+      .social-grid {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+    }}
+    .social-label {{
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #A0AEC0;
+      margin-bottom: 0.25rem;
+    }}
+    .social-text {{
+      margin: 0;
+      color: #E2E8F0;
+      line-height: 1.4;
+    }}
+    .social-grok {{
+      font-size: 0.75rem;
+      color: #C4F1F9;
+      margin-bottom: 0.5rem;
+    }}
+    .social-footer {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.7rem;
+      color: #A0AEC0;
+      border-top: 1px solid rgba(226, 232, 240, 0.2);
+      padding-top: 0.45rem;
+    }}
+    .social-watermark {{
+      font-weight: 500;
+      color: #81E6D9;
+    }}
+         .social-card {{
+       margin-top: 0.9rem;
+       margin-bottom: 0.3rem;
+       background: #0B1B33;
+       color: #E2E8F0;
+       border-radius: 1rem;
+       padding: 0.95rem 1rem 1rem;
+       box-shadow: 0 18px 40px rgba(11, 27, 51, 0.55);
+     }}
+     .social-header {{
+       display: flex;
+       align-items: center;
+       justify-content: space-between;
+       gap: 0.75rem;
+       margin-bottom: 0.6rem;
+     }}
+     .social-title {{
+       font-size: 0.9rem;
+       font-weight: 600;
+       letter-spacing: 0.01em;
+     }}
+     .social-logo img {{
+       width: 28px;
+       height: 28px;
+       display: block;
+       border-radius: 999px;
+     }}
+     .social-score-row {{
+       display: grid;
+       grid-template-columns: auto 1fr;
+       align-items: center;
+       gap: 0.55rem 0.75rem;
+       margin-bottom: 0.7rem;
+     }}
+     .social-score-number {{
+       font-size: 1.1rem;
+       font-weight: 700;
+       white-space: nowrap;
+     }}
+     .social-score-row .score-bar-track {{
+       height: 0.5rem;
+       background: rgba(148, 163, 184, 0.45);
+     }}
+     .social-score-row .score-bar-label {{
+       grid-column: 1 / -1;
+       font-size: 0.78rem;
+       color: #CBD5F5;
+     }}
+     .social-grid {{
+       display: grid;
+       grid-template-columns: minmax(0, 1fr);
+       gap: 0.5rem 1rem;
+       margin-bottom: 0.7rem;
+     }}
+     .social-text {{
+       margin: 0;
+       font-size: 0.82rem;
+       line-height: 1.4;
+     }}
+     .social-grok {{
+       margin-top: 0.4rem;
+       padding-top: 0.4rem;
+       border-top: 1px dashed rgba(148, 163, 184, 0.6);
+       font-size: 0.8rem;
+     }}
+     .social-footer {{
+       margin-top: 0.6rem;
+       display: flex;
+       justify-content: space-between;
+       gap: 0.75rem;
+       font-size: 0.75rem;
+       color: #CBD5F5;
+       opacity: 0.9;
+     }}
+     .social-watermark {{
+       font-weight: 500;
+       white-space: nowrap;
+     }}
+     @media (min-width: 640px) {{
+       .social-grid {
+         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+       }
+     }}
+
   </style>
 </head>
 <body>
-  <div class="page">
+    <div class="page">
     <header>
       <div class="logo-title">MindPilot Cognitive Flight Report</div>
       <div class="tagline">Your critical thinking copilot’s readback of this content.</div>
       <div class="header-meta">
         <span>{escape_html(source_type)}</span>
+        <span>· {total_chunks} section(s) analyzed</span>
         <span>· {escape_html(depth_text)}</span>
       </div>
     </header>
+
 """
 
     # ---------- Global card + subcards ----------
@@ -1306,6 +1576,7 @@ def build_html_report(
               <li><strong>Source type:</strong> {escape_html(source_type)}</li>
             </ul>
           </div>
+          {social_card_html}
     """
 
         # 1) Rationality Profile – always first if present
@@ -1430,52 +1701,174 @@ def build_html_report(
     """
 
     elif esc_global_fallback:
-        html += f"""
-    <section class="card">
-      <div class="card-title">Global MindPilot Reasoning Overview</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_global_fallback}</pre>
-      </div>
-    </section>
-"""
 
-    # ---------- Disclaimer card ----------
+        html += f"""
+
+        <section class="card">
+
+          <div class="card-title">Global MindPilot Reasoning Overview</div>
+
+          <div class="card-body">
+
+            <pre class="pre-block">{esc_global_fallback}</pre>
+
+          </div>
+
+        </section>
+
+    """
+
+    # ---------- Disclaimer + Creator checklist (always shown) ----------
 
     html += """
-    <section class="card-sub">
-      <div class="card-title">How to read this report</div>
-      <div class="card-body">
-        MindPilot is your critical thinking copilot. This analysis highlights patterns in
-        reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
-        so you can reflect more deliberately on what you’re hearing or reading.
-        <br/><br/>
-        <strong>Important:</strong> MindPilot does <em>not</em> act as a fact checker and does
-        <em>not</em> independently verify whether specific claims or statements are true.
-        It focuses on <strong>how</strong> arguments are made, not on adjudicating the
-        real-world accuracy of every assertion.
-      </div>
-    </section>
-"""
+
+        <section class="card-sub">
+
+          <div class="card-title">How to read this report</div>
+
+          <div class="card-body">
+
+            MindPilot is your critical thinking copilot. This analysis highlights patterns in
+
+            reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
+
+            so you can reflect more deliberately on what you’re hearing or reading.
+
+            <br/><br/>
+
+            <strong>Important:</strong> MindPilot does <em>not</em> act as a fact checker and does
+
+            <em>not</em> independently verify whether specific claims or statements are true.
+
+            It focuses on <strong>how</strong> arguments are made, not on adjudicating the
+
+            real-world accuracy of every assertion.
+
+          </div>
+
+        </section>
+
+
+        <section class="card-sub">
+
+          <div class="card-title">Creator Pre-Publish Checklist</div>
+
+          <div class="card-body">
+
+            <p class="card-body-text">
+
+              If you are the one publishing this piece (article, video, newsletter, or post),
+
+              use this checklist to tighten your draft before it goes live.
+
+            </p>
+
+
+            <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
+
+              <li>
+
+                <strong>Headline &amp; opener:</strong>
+
+                Does your title or hook accurately reflect the substance of the piece,
+
+                or is it leaning on exaggeration, fear, or outrage just to get clicks?
+
+              </li>
+
+              <li>
+
+                <strong>Claims vs. evidence:</strong>
+
+                For your 2–3 core claims, have you clearly shown what evidence supports them?
+
+                Would a skeptical reader understand <em>why</em> you believe each claim is true?
+
+              </li>
+
+              <li>
+
+                <strong>Counter-arguments:</strong>
+
+                Have you acknowledged the strongest reasonable objections or alternative views,
+
+                and either addressed them or clearly scoped what you’re <em>not</em> claiming?
+
+              </li>
+
+              <li>
+
+                <strong>Language intensity:</strong>
+
+                Are you using loaded or absolute language ("always", "never", "everyone")
+
+                where more precise wording would tell the truth without inflaming emotions?
+
+              </li>
+
+              <li>
+
+                <strong>Audience autonomy:</strong>
+
+                Are you giving your audience enough context, nuance, and uncertainty
+
+                to make up their own mind, or are you steering them toward a single permitted conclusion?
+
+              </li>
+
+            </ul>
+
+
+            <p class="card-body-text" style="margin-top:0.6rem;">
+
+              You don’t need to remove all emotion or persuasion to publish responsibly.
+
+              The goal is to make your reasoning <strong>transparent</strong> so a thoughtful
+
+              reader can see what you’re doing and decide whether they agree.
+
+            </p>
+
+          </div>
+
+        </section>
+
+    """
 
     # ---------- Section-level deep dive ----------
 
     if depth == "full" and escaped_chunks:
+
         html += """
-        <section>
-          <div class="section-heading">Section-Level Deep Dive</div>
-    """
+
+            <section>
+
+              <div class="section-heading">Section-Level Deep Dive</div>
+
+        """
+
         for i, text in enumerate(escaped_chunks):
             html += f"""
-          <article class="chunk-card">
-            <div class="chunk-header" onclick="toggleChunk({i})">
-              <span>Section {i + 1} – Reasoning Scan</span>
-              <span class="chunk-toggle" id="toggle-label-{i}">Show</span>
-            </div>
-            <div class="chunk-body" id="chunk-body-{i}">
-              <pre class="pre-block">{text}</pre>
-            </div>
-          </article>
-    """
+
+              <article class="chunk-card">
+
+                <div class="chunk-header" onclick="toggleChunk({i})">
+
+                  <span>Section {i + 1} – Reasoning Scan</span>
+
+                  <span class="chunk-toggle" id="toggle-label-{i}">Show</span>
+
+                </div>
+
+                <div class="chunk-body" id="chunk-body-{i}">
+
+                  <pre class="pre-block">{text}</pre>
+
+                </div>
+
+              </article>
+
+        """
 
     # ---------- Footer ----------
 

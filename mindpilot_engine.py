@@ -5,7 +5,18 @@ from typing import List
 import logging
 
 import httpx
+import io
 from bs4 import BeautifulSoup
+# Optional doc parsers (PDF, Word). These are optional dependencies.
+try:
+    import pypdf
+except ImportError:
+    pypdf = None
+
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
 
 from mindpilot_analyze import (
     extract_video_id,
@@ -201,6 +212,101 @@ def fetch_article_text(url: str) -> str:
         raise RuntimeError("Could not extract readable text from the article.")
 
     return "\n\n".join(paragraphs)
+def extract_text_from_document_bytes(
+    raw_bytes: bytes,
+    filename: str = "",
+    content_type: str | None = None,
+) -> str:
+    """
+    Best-effort extractor for uploaded documents.
+
+    - PDF  -> pypdf (if available)
+    - DOCX -> python-docx (if available)
+    - TXT  -> UTF-8 decode
+    - Fallback: UTF-8 decode with errors='ignore'
+    """
+    name_lower = (filename or "").lower()
+    ext = ""
+    if "." in name_lower:
+        ext = name_lower.rsplit(".", 1)[-1]
+
+    # --- PDF ---
+    if ext == "pdf" or (content_type or "").lower() == "application/pdf":
+        if not pypdf:
+            raise RuntimeError(
+                "PDF support is not installed on the server. "
+                "Ask the operator to install `pypdf`."
+            )
+        reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+        pages = []
+        for page in reader.pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
+            if text:
+                pages.append(text)
+        full = "\n\n".join(pages).strip()
+        if not full:
+            raise RuntimeError("Could not extract any text from the PDF.")
+        return full
+
+    # --- DOCX ---
+    if ext == "docx" or (content_type or "").lower() in {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }:
+        if not DocxDocument:
+            raise RuntimeError(
+                "DOCX support is not installed on the server. "
+                "Ask the operator to install `python-docx`."
+            )
+        doc = DocxDocument(io.BytesIO(raw_bytes))
+        paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        full = "\n\n".join(paras).strip()
+        if not full:
+            raise RuntimeError("Could not extract any text from the DOCX file.")
+        return full
+
+    # --- Plain text or fallback ---
+    try:
+        text = raw_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        raise RuntimeError("Unable to decode the uploaded file as text.")
+
+    text = text.strip()
+    if not text:
+        raise RuntimeError("Uploaded file appears to be empty or non-text.")
+    return text
+def run_full_analysis_from_document(file_bytes: bytes, filename: str = "") -> str:
+    """
+    Full-mode pipeline for uploaded documents (PDF / DOCX / TXT).
+    We:
+    - extract readable text
+    - route into the existing full text pipeline
+    """
+    text = extract_text_from_document_bytes(file_bytes, filename=filename)
+    return run_full_analysis_from_text(
+        raw_text=text,
+        source_label=filename or "Uploaded document",
+    )
+
+
+def run_quick_analysis_from_document(
+    file_bytes: bytes,
+    filename: str = "",
+    include_grok: bool = False,
+) -> str:
+    """
+    Quick-mode pipeline for uploaded documents.
+    - single-pass global profile
+    - no chunk cards
+    """
+    text = extract_text_from_document_bytes(file_bytes, filename=filename)
+    return run_quick_analysis_from_text(
+        raw_text=text,
+        source_label=filename or "Uploaded document",
+        include_grok=include_grok,
+    )
 
 
 def run_full_analysis_from_article(article_url: str) -> str:

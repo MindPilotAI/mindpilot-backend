@@ -2,7 +2,8 @@
 
 import logging
 
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, UploadFile, File
+
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,9 +11,11 @@ from mindpilot_engine import (
     run_full_analysis_from_youtube,
     run_full_analysis_from_text,
     run_full_analysis_from_article,
-    run_quick_analysis_from_youtube,   # NEW
-    run_quick_analysis_from_text,      # NEW
-    run_quick_analysis_from_article,   # NEW
+    run_quick_analysis_from_youtube,
+    run_quick_analysis_from_text,
+    run_quick_analysis_from_article,
+    run_full_analysis_from_document,   # 🔹 NEW
+    run_quick_analysis_from_document,  # 🔹 NEW
 )
 
 
@@ -51,10 +54,12 @@ async def health():
 # ---------------------------------------------------------
 @app.post("/analyze", response_class=HTMLResponse)
 async def analyze(
-    mode: str = Form(...),
-    input_value: str = Form(...),
-    depth: str = Form("full"),  # "quick" or "full"
+    mode: str = Form("text"),        # 👈 give it a default so file-only posts don't 422
+    input_value: str = Form(""),     # allow empty when using file
+    depth: str = Form("full"),       # "quick" or "full"
+    file: UploadFile | None = File(None),
 ):
+
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
@@ -71,6 +76,29 @@ async def analyze(
         depth = "full"
 
     try:
+        # 🔹 1) If a file is present, treat this as a document analysis
+        if file is not None and file.filename:
+            filename = file.filename
+            logging.info(
+                f"[MindPilot] Running {depth} document analysis for upload: {filename}"
+            )
+            raw_bytes = await file.read()
+
+            if depth == "quick":
+                html_report = run_quick_analysis_from_document(
+                    file_bytes=raw_bytes,
+                    filename=filename,
+                    include_grok=False,  # keep quick cheap for now
+                )
+            else:
+                html_report = run_full_analysis_from_document(
+                    file_bytes=raw_bytes,
+                    filename=filename,
+                )
+
+            return HTMLResponse(content=html_report, status_code=200)
+
+        # 🔹 2) Otherwise, fall back to the existing mode-based logic
         if mode == "youtube":
             youtube_url = input_value.strip()
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
