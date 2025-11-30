@@ -718,15 +718,29 @@ def build_html_report(
             m_cat_heading = re.match(r"^#{1,6}\s*(.+)$", normalized)
 
             m_cat = m_cat_bullet or m_cat_heading
+            is_category_line = False
             if m_cat:
                 maybe_cat = m_cat.group(1).strip()
 
-                # Only treat it as a category if it looks like one of our groups
-                if re.search(r"fallac", maybe_cat, re.I) or re.search(r"bias", maybe_cat, re.I) \
-                        or re.search(r"rhetoric|persuasion", maybe_cat, re.I) \
-                        or re.search(r"manipulat|conditioning", maybe_cat, re.I):
+                # Only treat as a category if:
+                # - there is NO ":" (so "Confirmation Bias: ..." is NOT a category), and
+                # - it looks like a high-level group name
+                if (
+                        ":" not in maybe_cat
+                        and len(maybe_cat) <= 80
+                        and (
+                        re.search(r"fallac", maybe_cat, re.I)
+                        or re.search(r"bias", maybe_cat, re.I)
+                        or re.search(r"rhetoric|persuasion", maybe_cat, re.I)
+                        or re.search(r"manipulat|conditioning", maybe_cat, re.I)
+                )
+                ):
                     current_category = maybe_cat
-                    continue  # go to next line
+                    is_category_line = True
+
+            if is_category_line:
+                # We already handled this as a category; skip item parsing for this line.
+                continue
 
             # --- ITEM LINES -------------------------------------------------
             # Most common pattern:
@@ -1242,15 +1256,17 @@ def build_html_report(
       color: var(--text-muted);
       line-height: 1.5;
     }}
-        .fallacy-table-wrapper {{
+    .fallacy-table-wrapper {{
       margin-top: 0.5rem;
       overflow-x: auto;
     }}
     .fallacy-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.82rem;
+        table-layout: fixed;
     }}
+
     .fallacy-table th,
     .fallacy-table td {{
       padding: 0.35rem 0.4rem;
@@ -1264,10 +1280,12 @@ def build_html_report(
       background: #F7FAFC;
     }}
     .fallacy-type {{
-      white-space: nowrap;
-      font-weight: 500;
-      color: var(--text-muted);
+        font-weight: 500;
+        color: var(--text-muted);
+        width: 18%;
+        white-space: normal;
     }}
+
     .fallacy-name {{
       font-weight: 500;
       color: var(--dark-navy);
