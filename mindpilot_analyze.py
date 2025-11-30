@@ -1584,164 +1584,143 @@ def build_html_report(
 
     if has_any_global:
         html += f"""
-        <section class="card">
-          <div class="card-title">Global MindPilot Reasoning Overview</div>
-          <div class="card-body">
-            <p class="card-body-text">
-              Quick read of the whole piece – overall reasoning quality, dominant fallacy &amp; bias patterns,
-              and how emotionally loaded the framing is.
-              In quick mode, MindPilot runs a single global scan. In full mode, it also
-              runs section-level diagnostics, so scores may shift slightly within a
-              small tolerance as the system “thinks harder” about the reasoning.
-            </p>
-            {score_chip_html}
-            {score_bar_html}
-            <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
-              <li><strong>Source type:</strong> {escape_html(source_type)}</li>
-            </ul>
-          </div>
-          {social_card_html}
-          {social_card_tools_html}
-    """
+    <section class="card">
+      <div class="card-title">Global MindPilot Reasoning Overview</div>
+      <div class="card-body">
+        <p class="card-body-text">
+          Quick read of the whole piece – overall reasoning quality, dominant fallacy &amp; bias patterns,
+          and how emotionally loaded the framing is.
+          In quick mode, MindPilot runs a single global scan. In full mode, it also
+          runs section-level diagnostics, so scores may shift slightly within a
+          small tolerance as the system “thinks harder” about the reasoning.
+        </p>
+        {score_chip_html}
+        {score_bar_html}
+        <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
+          <li><strong>Source type:</strong> {escape_html(source_type)}</li>
+          <li><strong>Sections analyzed:</strong> {total_chunks}</li>
+          <li><strong>Analysis mode:</strong> {escape_html(depth_text)}</li>
+        </ul>
+      </div>
+      """
 
-        # 1) Rationality Profile – always first if present
+        # 1) Rationality Profile – always first if present (open by default)
         if esc_profile:
             html += f"""
-          <section class="card-sub">
-            <div class="collapsible-header" onclick="toggleSection('rationality-profile')">
-              <span>Rationality Profile for the Entire Segment</span>
-              <span class="collapsible-toggle" id="toggle-rationality-profile">Hide</span>
-            </div>
-            <div class="collapsible-body open" id="section-rationality-profile">
-              {dimension_bars_html}
-              <pre class="pre-block">{esc_profile}</pre>
-            </div>
-          </section>
-    """
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('rationality-profile')">
+          <span>Rationality Profile for the Entire Segment</span>
+          <span class="collapsible-toggle" id="toggle-rationality-profile">Hide</span>
+        </div>
+        <div class="collapsible-body open" id="section-rationality-profile">
+          {dimension_bars_html}
+          <pre class="pre-block">{esc_profile}</pre>
+        </div>
+      </section>
+      """
 
-        # 2) Critical Thinking Questions
+        # 2) Critical Thinking Questions – show by default
         if esc_questions:
             html += f"""
-          <section class="card-sub">
-            <div class="collapsible-header" onclick="toggleSection('critical-questions')">
-              <span>Critical Thinking Questions to Ask Yourself</span>
-              <span class="collapsible-toggle" id="toggle-critical-questions">Hide</span>
-            </div>
-            <div class="collapsible-body" id="section-critical-questions">
-              <pre class="pre-block">{esc_questions}</pre>
-            </div>
-          </section>
-    """
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('critical-questions')">
+          <span>Critical Thinking Questions to Ask Yourself</span>
+          <span class="collapsible-toggle" id="toggle-critical-questions">Hide</span>
+        </div>
+        <div class="collapsible-body open" id="section-critical-questions">
+          <pre class="pre-block">{esc_questions}</pre>
+        </div>
+      </section>
+      """
 
-        # 3) MindPilot × Grok Live Context (if present)
+        # 3) MindPilot × Grok (if present) – we render this card next
         html += grok_card_html
 
-        # 4) Full Reasoning Scan pieces
+        # 4) Full Reasoning Scan + Master Map (full mode only)
         if depth == "full":
             if esc_full:
                 html += f"""
-              <section class="card-sub">
-                <div class="collapsible-header" onclick="toggleSection('global-summary')">
-                  <span>Full Reasoning Scan – Global Summary</span>
-                  <span class="collapsible-toggle" id="toggle-global-summary">Show</span>
-                </div>
-                <div class="collapsible-body" id="section-global-summary">
-                  <pre class="pre-block">{esc_full}</pre>
-                </div>
-              </section>
-        """
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('global-summary')">
+          <span>Full Reasoning Scan – Global Summary</span>
+          <span class="collapsible-toggle" id="toggle-global-summary">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-global-summary">
+          <pre class="pre-block">{esc_full}</pre>
+        </div>
+      </section>
+      """
 
             if esc_map:
                 html += f"""
-              <section class="card-sub">
-                <div class="collapsible-header" onclick="toggleSection('master-map')">
-                  <span>Master Fallacy &amp; Bias Map</span>
-                  <span class="collapsible-toggle" id="toggle-master-map">Hide</span>
-                </div>
-                <div class="collapsible-body open" id="section-master-map">
-                  {fallacy_table_html or f'<pre class="pre-block">{esc_map}</pre>'}
-                </div>
-              </section>
-        """
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('master-map')">
+          <span>Master Fallacy &amp; Bias Map</span>
+          <span class="collapsible-toggle" id="toggle-master-map">Hide</span>
+        </div>
+        <div class="collapsible-body open" id="section-master-map">
+          {fallacy_table_html or f'<pre class="pre-block">{esc_map}</pre>'}
+        </div>
+      </section>
+      """
 
+        # 5) Condensed Executive Summary
         if esc_investor:
-                html += f"""
-              <section class="card-sub">
-                <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-                  <span>Condensed Executive Summary</span>
-                  <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
-                </div>
-                <div class="collapsible-body" id="section-investor-summary">
-                  <pre class="pre-block">{esc_investor}</pre>
-                </div>
-              </section>
-        """
+            html += f"""
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('investor-summary')">
+          <span>Condensed Executive Summary</span>
+          <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-investor-summary">
+          <pre class="pre-block">{esc_investor}</pre>
+        </div>
+      </section>
+      """
 
-        else:
-            # Quick reports: slimmed-down executive summary only
-            if esc_investor:
-                html += f"""
-          <section class="card-sub">
-            <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-              <span>Condensed Executive Summary</span>
-              <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
-            </div>
-            <div class="collapsible-body" id="section-investor-summary">
-              <pre class="pre-block">{esc_investor}</pre>
-            </div>
-          </section>
-    """
-
-        # 5) Social snippet drafts – kept for your marketing runs
+        # 6) Social snippet drafts – kept for your own marketing runs
         html += f"""
-          <section class="card-sub">
-            <div class="collapsible-header" onclick="toggleSection('social-snippets')">
-              <span>Social Snippet Drafts</span>
-              <span class="collapsible-toggle" id="toggle-social-snippets">Show</span>
-            </div>
-            <div class="collapsible-body" id="section-social-snippets">
-              <p class="card-body-text">
-                Copy and lightly edit these for your MindPilot social posts. They’re auto-tuned
-                to this Cognitive Flight Report and meant for your own accounts
-                (X/Twitter, TikTok/Shorts, LinkedIn).
-              </p>
+      <section class="card-sub">
+        <div class="collapsible-header" onclick="toggleSection('social-snippets')">
+          <span>Social Snippet Drafts</span>
+          <span class="collapsible-toggle" id="toggle-social-snippets">Show</span>
+        </div>
+        <div class="collapsible-body" id="section-social-snippets">
+          <p class="card-body-text">
+            Copy and lightly edit these for your MindPilot social posts. They’re auto-tuned
+            to this Cognitive Flight Report and meant for your own accounts
+            (X/Twitter, TikTok/Shorts, LinkedIn).
+          </p>
 
-              <div class="social-snippet">
-                <div class="social-label">X / Twitter post</div>
-                <pre class="pre-block">{esc_twitter_snippet}</pre>
-              </div>
+          <div class="social-snippet">
+            <div class="social-label">X / Twitter</div>
+            <pre class="pre-block">{esc_twitter_snippet}</pre>
+          </div>
 
-              <div class="social-snippet">
-                <div class="social-label">TikTok / Shorts caption</div>
-                <pre class="pre-block">{esc_tiktok_snippet}</pre>
-              </div>
+          <div class="social-snippet">
+            <div class="social-label">TikTok / Shorts caption</div>
+            <pre class="pre-block">{esc_tiktok_snippet}</pre>
+          </div>
 
-              <div class="social-snippet">
-                <div class="social-label">LinkedIn post intro</div>
-                <pre class="pre-block">{esc_linkedin_snippet}</pre>
-              </div>
-            </div>
-          </section>
-        </section>
+          <div class="social-snippet">
+            <div class="social-label">LinkedIn post intro</div>
+            <pre class="pre-block">{esc_linkedin_snippet}</pre>
+          </div>
+        </div>
+      </section>
+    </section>
     """
 
     elif esc_global_fallback:
-
         html += f"""
-
-        <section class="card">
-
-          <div class="card-title">Global MindPilot Reasoning Overview</div>
-
-          <div class="card-body">
-
-            <pre class="pre-block">{esc_global_fallback}</pre>
-
-          </div>
-
-        </section>
-
+    <section class="card">
+      <div class="card-title">Global MindPilot Reasoning Overview</div>
+      <div class="card-body">
+        <pre class="pre-block">{esc_global_fallback}</pre>
+      </div>
+    </section>
     """
+
 
     # ---------- Disclaimer + Creator checklist (always shown) ----------
 
