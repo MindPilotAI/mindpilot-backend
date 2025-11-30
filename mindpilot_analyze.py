@@ -379,6 +379,20 @@ headings:
 - For each, briefly describe:
   - how it shows up in the content, and
   - how often it appears (Low / Medium / High).
+Format this section in EXACTLY this markdown pattern:
+
+- **Logical Fallacies**
+  - **[Name]**: description (High/Medium/Low)
+  - **[Name]**: description (High/Medium/Low)
+
+- **Cognitive Biases**
+  - **[Name]**: description (High/Medium/Low)
+
+- **Rhetorical / Persuasion Tactics**
+  - **[Name]**: description (High/Medium/Low)
+
+- **Manipulative / Conditioning Patterns**
+  - **[Name]**: description (High/Medium/Low)  
 
 # 3. Rationality Profile for the Entire Segment
 - Create a short overview of reasoning strengths.
@@ -464,9 +478,11 @@ def build_social_card_html(
         bar_width = 100
         bar_caption = score_label or "Reasoning profile overview"
     else:
+        # Keep the pill itself VERY short
         score_display = f"{overall_score_100}/100"
         bar_width = overall_score_100
-        bar_caption = f"{overall_score_100}/100 · {score_label}"
+        # Caption just carries the qualitative label
+        bar_caption = score_label
 
     fallacy_text = fallacy_snippet.strip() if fallacy_snippet else "Key fallacy and bias signals highlighted in the full report."
     questions_text = questions_snippet.strip() if questions_snippet else "See the full report for critical questions to stress-test this piece."
@@ -530,8 +546,8 @@ def build_html_report(
     depth: str = "full",  # "quick" or "full"
 ):
     SOCIAL_HANDLES = {
-        "twitter": "@YourHandleHere",  # update once you decide
-        "tiktok": "@YourHandleHere",
+        "twitter": "@mindpilotai360",  # update once you decide
+        "tiktok": "@mindpilotai",
         "linkedin": "MindPilot · Cognitive Flight Report",
     }
 
@@ -666,42 +682,69 @@ def build_html_report(
         """
         Parse the markdown-style Master Fallacy & Bias Map into an HTML table.
 
-        Handles lines like:
-          - **Confirmation Bias**: Venezuelan interpretations ... (High)
-        and pulls "High/Medium/Low" into a separate Severity column while
+        It is tolerant of slightly different markdown formats. It tries to handle:
+
+        - Category lines, e.g.:
+            - **Logical Fallacies**
+            - **Cognitive Biases**
+            ### Logical Fallacies
+        - Item lines, e.g.:
+            - **Confirmation Bias**: description ... (High)
+            - Confirmation Bias: description ... High
+
+        and pulls "High / Medium / Low" into a separate Severity column while
         stripping it from the description.
         """
         if not raw_map:
             return ""
 
         rows: list[tuple[str, str, str, str]] = []
-        current_category: str | None = None
+
+        # Default bucket so we don't drop items when categories are missing
+        current_category: str | None = "Pattern group"
 
         for line in raw_map.splitlines():
             stripped = line.strip()
             if not stripped:
                 continue
 
-            # Category lines (e.g. "- **Logical Fallacies**")
-            m_cat = re.match(r"^-\s*\*\*(.+?)\*\*\s*$", stripped)
-            if m_cat:
-                current_category = m_cat.group(1).strip()
-                continue
+            # --- CATEGORY LINES ---------------------------------------------
+            # Normalize out bold markers and trailing colons
+            normalized = stripped.replace("**", "").rstrip(":").strip()
 
-            # Item lines (most common pattern):
-            # - **Name**: description ... (High)
-            m_item = re.match(
-                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+)$",
-                stripped,
-            )
-            if not (m_item and current_category):
+            # Bullet-style categories: "- Logical Fallacies"
+            m_cat_bullet = re.match(r"^[-*]\s*(.+)$", normalized)
+            # Heading-style categories: "### Logical Fallacies"
+            m_cat_heading = re.match(r"^#{1,6}\s*(.+)$", normalized)
+
+            m_cat = m_cat_bullet or m_cat_heading
+            if m_cat:
+                maybe_cat = m_cat.group(1).strip()
+
+                # Only treat it as a category if it looks like one of our groups
+                if re.search(r"fallac", maybe_cat, re.I) or re.search(r"bias", maybe_cat, re.I) \
+                        or re.search(r"rhetoric|persuasion", maybe_cat, re.I) \
+                        or re.search(r"manipulat|conditioning", maybe_cat, re.I):
+                    current_category = maybe_cat
+                    continue  # go to next line
+
+            # --- ITEM LINES -------------------------------------------------
+            # Most common pattern:
+            # - **Name**: description...
+            m_item = re.match(r"^[-*]\s*\*\*(.+?)\*\*\s*:\s*(.+)$", stripped)
+
+            # Fallback: "- Name: description..."
+            if not m_item:
+                m_item = re.match(r"^[-*]\s*([^:]+?)\s*:\s*(.+)$", stripped)
+
+            if not m_item:
                 continue
 
             name = m_item.group(1).strip()
             desc = m_item.group(2).strip()
             severity = ""
 
-            # Try to pull "(High|Medium|Low)" off the end, if present
+            # Pull "(High|Medium|Low)" from the end if present
             m_sev_trailing = re.search(r"\((High|Medium|Low)\)\s*\.?\s*$", desc)
             if m_sev_trailing:
                 severity = m_sev_trailing.group(1)
@@ -718,11 +761,16 @@ def build_html_report(
                         desc
                     ).strip()
 
+            if not current_category:
+                current_category = "Pattern group"
+
             rows.append((current_category, name, desc, severity))
 
         if not rows:
+            # Nothing matched – let the caller fall back to the raw markdown
             return ""
 
+        # Sort by severity (High → Medium → Low → none), then category, then name
         severity_rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
         rows.sort(
             key=lambda r: (
@@ -751,18 +799,18 @@ def build_html_report(
 
         return (
                 """
-                <div class="fallacy-table-wrapper">
-                  <table class="fallacy-table">
-                    <thead>
-                      <tr>
-                        <th>Pattern type</th>
-                        <th>Fallacy / bias</th>
-                        <th>How it shows up in this piece</th>
-                        <th>Severity</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                """
+                    <div class="fallacy-table-wrapper">
+                      <table class="fallacy-table">
+                        <thead>
+                          <tr>
+                            <th>Pattern type</th>
+                            <th>Fallacy / bias</th>
+                            <th>How it shows up in this piece</th>
+                            <th>Severity</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                    """
                 + "".join(body_rows)
                 + """
                 </tbody>
@@ -1356,7 +1404,7 @@ def build_html_report(
     }}
     .score-bar-track {{
       width: 100%;
-      height: 0.55rem;
+      height: 0.5rem;
       border-radius: 999px;
       background: #E2E8F0;
       overflow: hidden;
@@ -1418,54 +1466,86 @@ def build_html_report(
       color: var(--text-muted);
       margin-bottom: 0.2rem;
     }}
-        .social-card {{
-      margin-top: 0.8rem;
-      border-radius: 1rem;
-      border: 1px solid var(--border-subtle);
-      background: linear-gradient(135deg, #0B1B33, #1A365D);
-      color: #E2E8F0;
-      padding: 0.9rem 1rem;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-    }}
-    .social-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.6rem;
-    }}
-    .social-title {{
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: #EDF2F7;
-    }}
-    .social-logo img {{
-      width: 28px;
-      height: 28px;
-      border-radius: 999px;
-      display: block;
-    }}
-    .social-score-row {{
-      margin-bottom: 0.7rem;
-      font-size: 0.78rem;
-    }}
-    .social-score-number {{
-      font-size: 1.6rem;
-      font-weight: 700;
-      color: #FBD38D;
-      margin-bottom: 0.25rem;
-    }}
-    .social-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.7rem;
-      margin-bottom: 0.6rem;
-      font-size: 0.78rem;
-    }}
-    @media (max-width: 640px) {{
-      .social-grid {{
-        grid-template-columns: minmax(0, 1fr);
+          .social-card {{
+        margin-top: 0.9rem;
+        border-radius: 1rem;
+        border: 1px solid rgba(148, 163, 184, 0.55);
+        padding: 0.9rem 0.95rem;
+        background: radial-gradient(circle at top left, #0B1B33, #1A365D);
+        color: #E2E8F0;
       }}
-    }}
+
+      .social-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.6rem;
+      }}
+
+      .social-title {{
+        font-size: 0.88rem;
+        font-weight: 600;
+        line-height: 1.3;
+      }}
+
+      /* ⬇️ Make the MindPilot symbol much larger */
+      .social-logo img {{
+        width: 72px;   /* was ~36–40px */
+        height: 72px;
+        display: block;
+      }}
+
+      .social-score-row {{
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.4rem 0.5rem;
+        align-items: center;
+        margin-bottom: 0.7rem;
+      }}
+
+      /* Short, compact pill */
+      .social-score-number {{
+        font-size: 0.9rem;
+        font-weight: 600;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        background: rgba(15, 23, 42, 0.7);
+        text-align: center;
+        min-width: 3.5rem;
+      }}
+
+      .score-bar-track {{
+        height: 0.5rem;
+        background: rgba(148, 163, 184, 0.45);
+      }}
+
+      .social-score-row .score-bar-label {{
+        grid-column: 1 / -1;
+        font-size: 0.78rem;
+        color: #CBD5F5;
+      }}
+
+      .social-grid {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.5rem 1rem;
+        margin-bottom: 0.7rem;
+      }}
+
+      .social-text {{
+        margin: 0;
+        font-size: 0.82rem;
+        line-height: 1.4;
+      }}
+
+      @media (min-width: 640px) {{
+        .social-grid {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        }
+      }}
+
     .social-label {{
       font-size: 0.72rem;
       text-transform: uppercase;
@@ -1595,6 +1675,21 @@ def build_html_report(
         <span>· {escape_html(depth_text)}</span>
       </div>
     </header>
+        <section class="card-sub">
+      <div class="card-title">Source & analysis mode</div>
+      <div class="card-body">
+        <div style="font-size:0.88rem;margin-bottom:0.25rem;">
+          <strong>Content type:</strong> {escape_html(source_type)}
+        </div>
+        {""
+        if not source_url
+        else f'<div style="font-size:0.85rem;word-wrap:break-word;"><strong>Source:</strong> <a href="{escape_html(source_url)}" target="_blank" rel="noopener noreferrer">{escape_html(source_url)}</a></div>'
+        }
+        <div class="subtext" style="margin-top:0.4rem;">
+          {escape_html(depth_text)}
+        </div>
+      </div>
+    </section>
 
 """
 
@@ -1603,23 +1698,8 @@ def build_html_report(
     if has_any_global:
         html += f"""
     <section class="card">
-      <div class="card-title">Global MindPilot Reasoning Overview</div>
-      <div class="card-body">
-        <p class="card-body-text">
-          Quick read of the whole piece – overall reasoning quality, dominant fallacy &amp; bias patterns,
-          and how emotionally loaded the framing is.
-          In quick mode, MindPilot runs a single global scan. In full mode, it also
-          runs section-level diagnostics, so scores may shift slightly within a
-          small tolerance as the system “thinks harder” about the reasoning.
-        </p>
-        {score_chip_html}
-        {score_bar_html}
-        <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
-          <li><strong>Source type:</strong> {escape_html(source_type)}</li>
-          <li><strong>Sections analyzed:</strong> {total_chunks}</li>
-          <li><strong>Analysis mode:</strong> {escape_html(depth_text)}</li>
-        </ul>
-      </div>
+      <div class="card-title">Your Critical Thinking CoPilot</div>
+      
       {social_card_html}
       """
 
