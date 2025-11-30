@@ -661,17 +661,15 @@ def build_html_report(
         # collapse excess blank lines
         block = re.sub(r"\n{3,}", "\n\n", block)
         return block.strip()
+
     def build_fallacy_table(raw_map: str) -> str:
         """
         Parse the markdown-style Master Fallacy & Bias Map into an HTML table.
 
-        Expected pattern (your current output):
-
-        - **Logical Fallacies**
-          - **False Cause / Post Hoc**: Implies direct causation... (High)
-
-        - **Cognitive Biases**
-          - **Availability Heuristic**: ... (Medium)
+        Handles lines like:
+          - **Confirmation Bias**: Venezuelan interpretations ... (High)
+        and pulls "High/Medium/Low" into a separate Severity column while
+        stripping it from the description.
         """
         if not raw_map:
             return ""
@@ -684,29 +682,48 @@ def build_html_report(
             if not stripped:
                 continue
 
-            # Category lines: "- **Logical Fallacies**"
+            # Category lines (e.g. "- **Logical Fallacies**")
             m_cat = re.match(r"^-\s*\*\*(.+?)\*\*\s*$", stripped)
             if m_cat:
                 current_category = m_cat.group(1).strip()
                 continue
 
-            # Item lines: "- **Name**: description (High)"
+            # Item lines (most common pattern):
+            # - **Name**: description ... (High)
             m_item = re.match(
-                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\((High|Medium|Low)\))?\s*$",
+                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+)$",
                 stripped,
             )
-            if m_item and current_category:
-                name = m_item.group(1).strip()
-                desc = m_item.group(2).strip()
-                severity = (m_item.group(3) or "").strip()
-                rows.append((current_category, name, desc, severity))
+            if not (m_item and current_category):
+                continue
+
+            name = m_item.group(1).strip()
+            desc = m_item.group(2).strip()
+            severity = ""
+
+            # Try to pull "(High|Medium|Low)" off the end, if present
+            m_sev_trailing = re.search(r"\((High|Medium|Low)\)\s*\.?\s*$", desc)
+            if m_sev_trailing:
+                severity = m_sev_trailing.group(1)
+                desc = re.sub(r"\s*\((High|Medium|Low)\)\s*\.?\s*$", "", desc).strip()
+
+            # If still no severity, look anywhere in the string
+            if not severity:
+                m_sev_inline = re.search(r"\b(High|Medium|Low)\b", desc)
+                if m_sev_inline:
+                    severity = m_sev_inline.group(1)
+                    desc = re.sub(
+                        r"\s*\(?\b(High|Medium|Low)\b\)?",
+                        "",
+                        desc
+                    ).strip()
+
+            rows.append((current_category, name, desc, severity))
 
         if not rows:
             return ""
 
         severity_rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
-
-        # Sort: High → Medium → Low, then by category/name
         rows.sort(
             key=lambda r: (
                 severity_rank.get(r[3], 3),
@@ -721,38 +738,39 @@ def build_html_report(
             sev_class = severity.lower() if severity else "none"
             body_rows.append(
                 f"""
-          <tr>
-            <td class="fallacy-type">{escape_html(category)}</td>
-            <td class="fallacy-name">{escape_html(name)}</td>
-            <td class="fallacy-desc">{escape_html(desc)}</td>
-            <td class="fallacy-severity">
-              <span class="fallacy-tag {sev_class}">{escape_html(sev_label)}</span>
-            </td>
-          </tr>
+              <tr>
+                <td class="fallacy-type">{escape_html(category)}</td>
+                <td class="fallacy-name">{escape_html(name)}</td>
+                <td class="fallacy-desc">{escape_html(desc)}</td>
+                <td class="fallacy-severity">
+                  <span class="fallacy-tag {sev_class}">{escape_html(sev_label)}</span>
+                </td>
+              </tr>
                 """
             )
 
-        table_html = (
+        return (
+                """
+                <div class="fallacy-table-wrapper">
+                  <table class="fallacy-table">
+                    <thead>
+                      <tr>
+                        <th>Pattern type</th>
+                        <th>Fallacy / bias</th>
+                        <th>How it shows up in this piece</th>
+                        <th>Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                """
+                + "".join(body_rows)
+                + """
+                </tbody>
+              </table>
+            </div>
             """
-        <div class="fallacy-table-wrapper">
-          <table class="fallacy-table">
-            <thead>
-              <tr>
-                <th>Pattern type</th>
-                <th>Fallacy / bias</th>
-                <th>How it shows up in this piece</th>
-                <th>Severity</th>
-              </tr>
-            </thead>
-            <tbody>
-            """
-            + "".join(body_rows)
-            + """
-            </tbody>
-          </table>
-        </div>
-        """
         )
+
         return table_html
     def summarize_fallacies_for_social(raw_map: str) -> str:
         """
@@ -1602,6 +1620,7 @@ def build_html_report(
           <li><strong>Analysis mode:</strong> {escape_html(depth_text)}</li>
         </ul>
       </div>
+      {social_card_html}
       """
 
         # 1) Rationality Profile – always first if present (open by default)
