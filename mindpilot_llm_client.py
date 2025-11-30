@@ -14,6 +14,59 @@ def get_openai_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
+def classify_content(text: str) -> dict:
+    """
+    Lightweight safety classification for MindPilot.
+    Returns:
+      {
+        "classification": "allow" | "restricted" | "block",
+        "reason": "short explanation",
+        "allowed_scope": "optional guidance"
+      }
+    """
+
+    client = get_openai_client()
+
+    system_prompt = (
+        "You classify user-submitted content for safety gating.\n"
+        "You are NOT performing analysis.\n"
+        "Return ONLY valid JSON.\n\n"
+        "Classifications:\n"
+        "- allow: safe to analyze\n"
+        "- restricted: sensitive but analyzable with disclaimers\n"
+        "- block: cannot be analyzed as written\n"
+    )
+
+    user_prompt = f"""
+Classify the following content for reasoning analysis only.
+
+Respond strictly in JSON with keys:
+- classification
+- reason
+- allowed_scope
+
+Content:
+{text}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content.strip())
+    except Exception:
+        # Fail open rather than breaking the app
+        return {
+            "classification": "allow",
+            "reason": "Classifier failed; defaulting to allow",
+            "allowed_scope": "",
+        }
 
 def run_mindpilot_analysis(prompt: str, model: str = "gpt-4o-mini") -> str:
     """

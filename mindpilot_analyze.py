@@ -6,8 +6,7 @@ from urllib.parse import urlparse, parse_qs
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-from mindpilot_llm_client import run_mindpilot_analysis
-
+from mindpilot_llm_client import run_mindpilot_analysis, classify_content
 
 
 # ---------- CONFIG ----------
@@ -479,7 +478,7 @@ def build_social_card_html(
         footer_left = "Full Cognitive Flight Report available in the MindPilot app."
 
     return f"""
-      <section class="card-sub social-card">
+      <section class="card-sub social-card" id="mp-social-card">
         <div class="social-header">
           <div class="social-title">{escape_html(header_title)}</div>
           <div class="social-logo">
@@ -978,6 +977,30 @@ def build_html_report(
             report_url=None,  # you can swap in a real public URL later
             escape_html=escape_html,
         )
+    # Companion tools for the social card (PNG export)
+    social_card_tools_html = ""
+    if social_card_html:
+        social_card_tools_html = """
+          <div class="card-body" style="margin-top:0.4rem;font-size:0.78rem;color:#4A5568;">
+            <button
+              id="download-social-card"
+              style="
+                font-size:0.75rem;
+                padding:0.25rem 0.7rem;
+                border-radius:999px;
+                border:1px solid #CBD5E0;
+                background:#EDF2F7;
+                cursor:pointer;
+              "
+            >
+              Download social card as PNG
+            </button>
+            <span style="margin-left:0.4rem;">
+              Tip: share this image with attribution or link to the original source.
+            </span>
+          </div>
+        """
+
     depth_text = depth_label(depth)
 
     summary_body = extract_summary_body(full_summary)
@@ -1540,7 +1563,8 @@ def build_html_report(
        }}
      }}
 
-  </style>
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
     <div class="page">
@@ -1577,6 +1601,7 @@ def build_html_report(
             </ul>
           </div>
           {social_card_html}
+          {social_card_tools_html}
     """
 
         # 1) Rationality Profile – always first if present
@@ -1891,28 +1916,57 @@ def build_html_report(
     function toggleChunk(index) {{
       const body = document.getElementById('chunk-body-' + index);
       const label = document.getElementById('toggle-label-' + index);
-      const isOpen = body.classList.contains('open');
+      const isOpen = body && body.classList.contains('open');
       if (isOpen) {{
         body.classList.remove('open');
         label.textContent = 'Show';
-      }} else {{
+      }} else if (body) {{
         body.classList.add('open');
         label.textContent = 'Hide';
       }}
     }}
+
     function toggleSection(key) {{
       const body = document.getElementById('section-' + key);
       const label = document.getElementById('toggle-' + key);
-      const isOpen = body.classList.contains('open');
+      const isOpen = body && body.classList.contains('open');
       if (isOpen) {{
         body.classList.remove('open');
         label.textContent = 'Show';
-      }} else {{
+      }} else if (body) {{
         body.classList.add('open');
         label.textContent = 'Hide';
       }}
     }}
+
+    document.addEventListener('DOMContentLoaded', function () {{
+      const btn = document.getElementById('download-social-card');
+      if (!btn || !window.html2canvas) {{
+        return;
+      }}
+
+      btn.addEventListener('click', function () {{
+        const card = document.getElementById('mp-social-card');
+        if (!card) {{
+          alert('Social card not found in this report.');
+          return;
+        }}
+
+        html2canvas(card).then(function (canvas) {{
+          const link = document.createElement('a');
+          link.download = 'mindpilot_social_card.png';
+          link.href = canvas.toDataURL('image/png');
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }}).catch(function (err) {{
+          console.error('Error capturing social card:', err);
+          alert('Could not generate an image of the social card.');
+        }});
+      }});
+    }});
   </script>
+
 </body>
 </html>
 """
@@ -1938,6 +1992,41 @@ def main():
     except RuntimeError as e:
         print(f"Error fetching transcript: {e}")
         return
+
+    # 2b) Safety classification on the transcript (forbidden-content pre-filter)
+    attach_disclaimer = False
+    try:
+        classification = classify_content(transcript_text)
+    except Exception as e:
+        print(f"[safety] Classifier failed ({e}); defaulting to allow.")
+        classification = {
+            "classification": "allow",
+            "reason": "classifier error",
+            "allowed_scope": "",
+        }
+
+    cls = (classification.get("classification") or "allow").lower()
+    reason = classification.get("reason", "")
+
+    if cls == "block":
+        print("\n=== MindPilot Safety Gate ===")
+        print("MindPilot cannot analyze this content as written.")
+        if reason:
+            print(f"Reason: {reason}")
+        print(
+            "\nYou may instead:\n"
+            "- Analyze public news coverage about this topic\n"
+            "- Submit a non-instructional excerpt\n"
+            "- Frame your request around rhetoric or reasoning patterns"
+        )
+        return
+
+    if cls == "restricted":
+        attach_disclaimer = True
+        print("\n[Note] This content is sensitive.")
+        if reason:
+            print(f"Reason: {reason}")
+        print("MindPilot will analyze reasoning patterns only (no advice or endorsement).")
 
     # 3) Save raw transcript
     save_text_to_file(transcript_text, TRANSCRIPT_FILE)
@@ -1971,15 +2060,6 @@ def main():
 
     # ---------- AUTOMATIC ANALYSIS SECTION ----------
 
-    # Previous interactive version (kept for later if you want it back):
-    # run_auto = input(
-    #     "\nRun automatic MindPilot analysis via OpenAI API now? (y/n): "
-    # ).strip().lower()
-    #
-    # if run_auto != "y":
-    #     print("\nSkipping automatic analysis. You can still use the prompt pack manually.\n")
-    #     return
-
     print("\n=== Running automatic MindPilot analysis via OpenAI API ===")
     chunk_analyses = []  # store each chunk's analysis for global summary
 
@@ -1988,6 +2068,14 @@ def main():
     report_lines.append(f"_Source URL_: {youtube_url}\n")
     report_lines.append(f"_Video ID_: `{video_id}`\n")
     report_lines.append(f"_Chunks_: {total_chunks}\n")
+
+    if attach_disclaimer:
+        report_lines.append(
+            "\n> Safety note: This content was classified as sensitive. "
+            "MindPilot is analyzing reasoning patterns only and is not "
+            "providing advice, instructions, or endorsement.\n"
+        )
+
     report_lines.append("\n---\n\n")
 
     # Per-chunk analysis
@@ -2008,22 +2096,21 @@ def main():
 
     print(f"\nChunk-level analysis report written to: {report_path}")
 
-    # Optional: global summary + master map + rationality profile + investor summary
     # ----- AUTOMATIC GLOBAL SUMMARY (no prompts) -----
 
     global_report = ""
 
-    # Original interactive code preserved for later:
-    #
-    # build_global = input(
-    #     "Also generate global summary & investor-style overview? (y/n): "
-    # ).strip().lower()
-    #
-    # if build_global == "y":
-
     print("\n  -> Automatically generating global summary...")
     global_prompt = build_global_summary_prompt(chunk_analyses)
     global_report = run_mindpilot_analysis(global_prompt)
+
+    if attach_disclaimer:
+        global_report = (
+            "Safety note: This content was classified as sensitive; "
+            "MindPilot is analyzing reasoning patterns only and is not providing "
+            "advice, instructions, or endorsement.\n\n"
+            + global_report
+        )
 
     with open(report_path, "a", encoding="utf-8") as rf:
         rf.write("\n\n# Global MindPilot Reasoning Summary\n\n")
@@ -2050,6 +2137,8 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
 
     main()
 
