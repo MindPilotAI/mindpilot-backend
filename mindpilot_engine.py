@@ -6,6 +6,9 @@ import logging
 
 import httpx
 import io
+
+from datetime import datetime
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 # Optional doc parsers (PDF, Word). These are optional dependencies.
 try:
@@ -17,6 +20,50 @@ try:
     from docx import Document as DocxDocument
 except ImportError:
     DocxDocument = None
+def _slugify(text: str) -> str:
+    """
+    Simple slug helper:
+    - lowercases
+    - replaces non-alphanumeric with dashes
+    - trims leading/trailing dashes
+    """
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-")
+    return text or "report"
+
+
+def generate_report_id(source_label: str = "", source_url: str | None = None) -> str:
+    """
+    Generate a MindPilot-controlled report_id that does NOT depend on YouTube IDs.
+
+    Example:
+      20251201-nytimes-com-ai-will-replace-knowledge-workers
+    """
+    date_part = datetime.utcnow().strftime("%Y%m%d")
+
+    # Try to pull a nice host from the URL (e.g., nytimes.com)
+    host_part = ""
+    if source_url:
+        try:
+            parsed = urlparse(source_url)
+            host = (parsed.netloc or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            host_part = _slugify(host)
+        except Exception:
+            host_part = ""
+
+    label_part = _slugify(source_label) if source_label else ""
+
+    pieces = [date_part]
+    if host_part:
+        pieces.append(host_part)
+    if label_part:
+        pieces.append(label_part)
+
+    report_id = "-".join(pieces)
+    return report_id or f"report-{date_part}"
 
 from mindpilot_analyze import (
     extract_video_id,
@@ -117,18 +164,22 @@ def run_analysis_from_transcript(
         grok_insights = ""
 
     # 4) Build HTML
+    report_id = generate_report_id(
+        source_label=source_label or (youtube_url or "Public source"),
+        source_url=youtube_url,
+    )
+
     final_html = build_html_report(
-        youtube_url or source_label or "",
-        video_id or source_label or "N/A",
-        total_chunks,
-        chunk_analyses,
-        global_report,
-        grok_insights,
+        source_url=youtube_url or source_label or "",
+        report_id=report_id,
+        total_chunks=total_chunks,
+        chunk_analyses=chunk_analyses,
+        global_report=global_report,
+        grok_insights=grok_insights,
         depth="full",
     )
 
     return final_html
-
 
 
 def run_full_analysis_from_youtube(youtube_url: str) -> str:
@@ -347,9 +398,14 @@ def run_quick_analysis_from_text(
             grok_insights = ""
 
     # Use the same HTML template; no chunk cards, just global overview.
+    report_id = generate_report_id(
+        source_label=source_label or "Pasted text",
+        source_url=None,
+    )
+
     html = build_html_report(
         source_url=source_label or "Pasted text",
-        video_id=source_label or "N/A",
+        report_id=report_id,
         total_chunks=0,
         chunk_analyses=[],
         global_report=quick_global_report,

@@ -457,6 +457,7 @@ def build_social_card_html(
     escape_html,
 ) -> str:
     """
+
     Build a compact 'social card' HTML block that can be screenshotted
     for posts on X/Twitter, LinkedIn, TikTok, etc.
 
@@ -535,10 +536,244 @@ def build_social_card_html(
       </section>
     """
 
+def build_social_page_html(
+    *,
+    source_type: str,
+    overall_score_100: int | None,
+    score_label: str,
+    fallacy_snippet: str,
+    questions_snippet: str,
+    grok_line: str | None,
+    report_url: str | None,
+) -> str:
+    """
+    Return a standalone HTML page that just contains the social card.
+
+    We'll use this for:
+      - quickly grabbing a PNG via browser screenshot / html2canvas
+      - sharing a clean linkable snippet page per report
+    """
+
+    def _escape_html(text: str) -> str:
+        if text is None:
+            return ""
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+        )
+
+    # Reuse the existing card builder (which already supports the Grok one-liner)
+    card_html = build_social_card_html(
+        source_type=source_type,
+        overall_score_100=overall_score_100,
+        score_label=score_label,
+        fallacy_snippet=fallacy_snippet,
+        questions_snippet=questions_snippet,
+        grok_line=grok_line,        # ⬅️ Grok one-liner flows straight into the card
+        report_url=report_url,
+        escape_html=_escape_html,
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MindPilot Reasoning Snapshot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {{
+      --dark-navy: #0B1B33;
+      --sky-blue: #4FD1C5;
+      --soft-bg: #020617;
+      --card-bg: #020617;
+      --border-subtle: rgba(148, 163, 184, 0.6);
+      --text-main: #E2E8F0;
+      --text-muted: #94A3B8;
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
+    body {{
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #0B1B33, #020617 55%, #000000 100%);
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem 0.75rem;
+    }}
+    .page {{
+      width: 100%;
+      max-width: 600px;
+    }}
+    .brand-top {{
+      text-align: center;
+      margin-bottom: 0.75rem;
+      font-size: 0.82rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }}
+    .brand-top strong {{
+      color: #E2E8F0;
+    }}
+
+    /* Card styling (matches your social card, but tuned for standalone use) */
+    .social-card {{
+      border-radius: 1.1rem;
+      border: 1px solid var(--border-subtle);
+      padding: 1rem 1.1rem;
+      background: radial-gradient(circle at top left, #0B1B33, #020617);
+      color: var(--text-main);
+      box-shadow: 0 22px 45px rgba(15, 23, 42, 0.75);
+    }}
+    .social-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.9rem;
+      margin-bottom: 0.65rem;
+    }}
+    .social-title {{
+      font-size: 0.9rem;
+      font-weight: 600;
+      line-height: 1.35;
+    }}
+    .social-logo img {{
+      width: 64px;
+      height: 64px;
+      display: block;
+    }}
+    .social-score-row {{
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 0.45rem 0.6rem;
+      margin-bottom: 0.65rem;
+    }}
+    .social-score-number {{
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.15rem 0.6rem;
+      border-radius: 999px;
+      border: 1px solid rgba(226, 232, 240, 0.85);
+      background: rgba(15, 23, 42, 0.85);
+      text-align: center;
+      min-width: 3.2rem;
+    }}
+    .score-bar-track {{
+      height: 0.5rem;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.45);
+      overflow: hidden;
+    }}
+    .score-bar-fill {{
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #4FD1C5, #3182CE);
+    }}
+    .score-bar-label {{
+      grid-column: 1 / -1;
+      font-size: 0.78rem;
+      color: #CBD5F5;
+    }}
+    .social-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.55rem 1rem;
+      margin-bottom: 0.65rem;
+    }}
+    .social-label {{
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      margin-bottom: 0.18rem;
+    }}
+    .social-text {{
+      margin: 0;
+      font-size: 0.83rem;
+      line-height: 1.45;
+      color: #E2E8F0;
+    }}
+    .social-grok {{
+      margin-top: 0.45rem;
+      padding-top: 0.45rem;
+      border-top: 1px dashed rgba(148, 163, 184, 0.65);
+      font-size: 0.8rem;
+      color: #C4F1F9;
+      margin-bottom: 0.55rem;
+    }}
+    .social-footer {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }}
+    .social-watermark {{
+      font-weight: 500;
+      color: #81E6D9;
+      white-space: nowrap;
+    }}
+
+    #download-btn {{
+      margin-top: 0.8rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 0.8rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.9);
+      background: rgba(15, 23, 42, 0.9);
+      color: #E2E8F0;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+<body>
+  <div class="page">
+    <div class="brand-top">
+      <strong>MindPilot</strong> · Your co-pilot for critical thinking
+    </div>
+    {card_html}
+    <button id="download-btn" type="button">
+      Download snippet as image
+    </button>
+  </div>
+  <script>
+    (function() {{
+      const btn = document.getElementById('download-btn');
+      const card = document.getElementById('mp-social-card');
+      if (!btn || !card) return;
+      btn.addEventListener('click', function() {{
+        html2canvas(card, {{
+          useCORS: true,
+          backgroundColor: null,
+          scale: 2
+        }}).then(function(canvas) {{
+          const link = document.createElement('a');
+          link.download = 'mindpilot-reasoning-snapshot.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        }});
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
 
 def build_html_report(
     source_url,
-    video_id,
+    report_id,
     total_chunks,
     chunk_analyses,
     global_report,
@@ -801,12 +1036,10 @@ def build_html_report(
             body_rows.append(
                 f"""
               <tr>
-                <td class="fallacy-type">{escape_html(category)}</td>
-                <td class="fallacy-name">{escape_html(name)}</td>
-                <td class="fallacy-desc">{escape_html(desc)}</td>
-                <td class="fallacy-severity">
-                  <span class="fallacy-tag {sev_class}">{escape_html(sev_label)}</span>
-                </td>
+                <td class="fallacy-type col-type">...</td>
+                <td class="fallacy-name col-name">...</td>
+                <td class="fallacy-desc col-desc">...</td>
+                <td class="fallacy-severity col-sev">...</td>
               </tr>
                 """
             )
@@ -817,12 +1050,13 @@ def build_html_report(
                       <table class="fallacy-table">
                         <thead>
                           <tr>
-                            <th>Pattern type</th>
-                            <th>Fallacy / bias</th>
-                            <th>How it shows up in this piece</th>
-                            <th>Severity</th>
+                            <th class="col-type">Pattern type</th>
+                            <th class="col-name">Fallacy / bias</th>
+                            <th class="col-desc">How it shows up in this piece</th>
+                            <th class="col-sev">Severity</th>
                           </tr>
                         </thead>
+
                         <tbody>
                     """
                 + "".join(body_rows)
@@ -1054,32 +1288,9 @@ def build_html_report(
             fallacy_snippet=fallacy_snippet,
             questions_snippet=questions_snippet,
             grok_line=grok_line,
-            report_url=None,  # you can swap in a real public URL later
+            report_url=report_url,
             escape_html=escape_html,
         )
-    # Companion tools for the social card (PNG export)
-    social_card_tools_html = ""
-    if social_card_html:
-        social_card_tools_html = """
-          <div class="card-body" style="margin-top:0.4rem;font-size:0.78rem;color:#4A5568;">
-            <button
-              id="download-social-card"
-              style="
-                font-size:0.75rem;
-                padding:0.25rem 0.7rem;
-                border-radius:999px;
-                border:1px solid #CBD5E0;
-                background:#EDF2F7;
-                cursor:pointer;
-              "
-            >
-              Download social card as PNG
-            </button>
-            <span style="margin-left:0.4rem;">
-              Tip: share this image with attribution or link to the original source.
-            </span>
-          </div>
-        """
 
     depth_text = depth_label(depth)
 
@@ -1089,51 +1300,124 @@ def build_html_report(
         preview = preview[:220].rstrip() + "…"
 
     readable_score = (
-        f"{overall_score_100}/100" if overall_score_100 is not None else "a mixed reasoning profile"
+        f"{overall_score_100}/100" if overall_score_100 is not None else "reasoning risk detected"
     )
-    base_line = f"MindPilot Cognitive Flight Report on this {source_type}"
 
-    if preview:
-        core_takeaway = preview
-    else:
-        core_takeaway = (
-            "MindPilot flagged key reasoning patterns, fallacies, and bias signals in this piece."
+    # ---------- meta + social text snippets ----------
+
+    # 1) Infer source type for wording
+    source_type = infer_source_type(source_url or "")
+
+    # 2) Build a simple per-report slug and URL
+    #    This ties each snippet/card to a specific report path:
+    #    https://mind-pilot.ai/reports/{slug}
+    safe_id = (report_id or "report").lower()
+    safe_id = re.sub(r"[^a-z0-9]+", "-", safe_id).strip("-")
+    if not safe_id:
+        safe_id = "report"
+    report_url = f"https://mind-pilot.ai/reports/{safe_id}"
+
+    # 3) Build social-card HTML (only if we have at least some signal)
+    social_card_html = ""
+    if (overall_score_100 is not None) or fallacy_snippet or questions_snippet:
+        social_card_html = build_social_card_html(
+            source_type=source_type,
+            overall_score_100=overall_score_100,
+            score_label=label_for_chip or "Reasoning profile overview",
+            fallacy_snippet=fallacy_snippet,
+            questions_snippet=questions_snippet,
+            grok_line=grok_line,
+            report_url=report_url,  # <-- now points to this specific report
+            escape_html=escape_html,
         )
 
-    source_link = source_url or ""
-    tw_handle = SOCIAL_HANDLES.get("twitter", "")
-    tt_handle = SOCIAL_HANDLES.get("tiktok", "")
-    li_handle = SOCIAL_HANDLES.get("linkedin", "")
+    # 4) Canonical, platform-agnostic social snippet (single source of truth)
+    #
+    # This mirrors the "Canonical MindPilot Social Snippet Template" from your doc.
+    # We reuse existing data instead of inventing new fields.
+    # - Source label: domain from URL (e.g., "nytimes.com")
+    # - Content line: uses the truncated summary preview as a stand-in
+    # - Format: derived from source_type
+    #
+    from urllib.parse import urlparse
 
-    twitter_snippet = (
-        f"{base_line}: reasoning score {readable_score}. "
-        f"{core_takeaway} "
-        f"Source: {source_link} "
-        f"{tw_handle} #MindPilot #CriticalThinking"
-    )
+    # Source label from URL host
+    source_label = "Public source"
+    try:
+        if source_url:
+            parsed = urlparse(source_url)
+            host = parsed.netloc or ""
+            host = host.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if host:
+                source_label = host
+    except Exception:
+        pass
 
-    tiktok_snippet = (
-        f"This {source_type.lower()} just got a MindPilot Cognitive Flight Report.\n"
-        f"Reasoning score: {readable_score}.\n"
-        f"Source: {source_link}\n"
-        "MindPilot mapped fallacies, bias patterns, and rhetorical pressure so you don't have to.\n"
-        f"{tt_handle} · Full Cognitive Flight Report at mind-pilot.ai"
-    )
+    # Content "title" approximation from the preview text
+    content_title = preview
+    if len(content_title) > 140:
+        content_title = content_title[:137].rstrip() + "…"
 
-    linkedin_snippet = (
-        f"Today's MindPilot Cognitive Flight Report evaluates the reasoning quality of a "
-        f"{source_type.lower()}.\n"
-        f"Reasoning score: {readable_score}.\n"
-        f"{core_takeaway}\n"
-        f"Source: {source_link}\n"
-        "MindPilot surfaces argument structure, fallacies, bias patterns, and critical questions "
-        "to help professionals think more clearly.\n"
-        f"{li_handle}"
-    )
+    # Format bucket from source_type
+    lower_type = source_type.lower()
+    if "youtube" in lower_type or "video" in lower_type:
+        content_format = "Video / Commentary"
+    elif "article" in lower_type or "web page" in lower_type:
+        content_format = "News / Analysis"
+    else:
+        content_format = "Analysis / Commentary"
 
-    esc_twitter_snippet = escape_html(twitter_snippet)
-    esc_tiktok_snippet = escape_html(tiktok_snippet)
-    esc_linkedin_snippet = escape_html(linkedin_snippet)
+    # Score line for the diagnostic section
+    if overall_score_100 is not None:
+        score_line = f"{overall_score_100}/100"
+    else:
+        score_line = "Reasoning risk detected (no numerical score)"
+
+    # Fallacy & bias signals line(s)
+    fallacy_text = (fallacy_snippet or "").strip()
+    if not fallacy_text:
+        fallacy_text = "Reasoning patterns and bias signals surfaced in this piece."
+
+    # Creator-level question
+    question_text = (questions_snippet or "").strip()
+    if not question_text:
+        question_text = "What does this imply for the decisions you’re about to make?"
+
+    # Final link line – tied to this report URL
+    link_line = f"View the full Cognitive Flight Report → {report_url}"
+
+    canonical_snippet = textwrap.dedent(
+        f"""\
+        MindPilot — your co-pilot for critical thinking
+        Reasoning Snapshot · Public Media Analysis
+
+        Analyzed: {source_label}
+        Content: “{content_title}”
+        Format: {content_format}
+
+        Reasoning Risk Detected
+        {score_line}
+        (Early-warning signal for reasoning quality — not a fact-check)
+
+        Fallacies & Bias Signals Identified
+        {fallacy_text}
+        (Signals reflect structure and persuasion patterns, not truth claims.)
+
+        A Question This Analysis Raises
+        “{question_text}”
+
+        Cross-validated across multiple reasoning models
+        (Designed to surface non-obvious weaknesses in arguments.)
+
+        {link_line}
+        This same reasoning diagnostic can be run on your articles, research, or drafts.
+        """
+    ).strip()
+
+    esc_canonical_snippet = escape_html(canonical_snippet)
+
 
     # ---------- global presence flag & Grok card ----------
 
@@ -1266,6 +1550,27 @@ def build_html_report(
         font-size: 0.82rem;
         table-layout: fixed;
     }}
+        /* Column width control */
+    .fallacy-table .col-type {{
+      width: 16%;
+    }}
+    
+    .fallacy-table .col-name {{
+      width: 20%;
+    }}
+    
+    .fallacy-table .col-desc {{
+      width: 56%;
+      white-space: normal;
+      word-wrap: break-word;
+      word-break: break-word;
+    }}
+    
+    .fallacy-table .col-sev {{
+      width: 8%;
+      text-align: right;
+      white-space: nowrap;
+    }}
 
     .fallacy-table th,
     .fallacy-table td {{
@@ -1303,6 +1608,11 @@ def build_html_report(
       font-size: 0.72rem;
       border: 1px solid var(--border-subtle);
     }}
+    .fallacy-tag {{
+        min-width: 3.2rem;   /* just wider than "Medium" */
+        text-align: center;
+    }}
+
     .fallacy-tag.high {{
       background: rgba(229, 62, 62, 0.08);
       color: #C53030;
@@ -1617,8 +1927,8 @@ def build_html_report(
        letter-spacing: 0.01em;
      }}
      .social-logo img {{
-       width: 28px;
-       height: 28px;
+       width: 60px;
+       height: 60px;
        display: block;
        border-radius: 999px;
      }}
@@ -1710,14 +2020,11 @@ def build_html_report(
     </section>
 
 """
-
     # ---------- Global card + subcards ----------
-
     if has_any_global:
         html += f"""
     <section class="card">
-      <div class="card-title">Your Critical Thinking CoPilot</div>
-      
+      <div class="card-title">Your Critical Thinking CoPilot Report</div>
       {social_card_html}
       """
 
@@ -1735,7 +2042,6 @@ def build_html_report(
         </div>
       </section>
       """
-
         # 2) Critical Thinking Questions – show by default
         if esc_questions:
             html += f"""
@@ -1767,7 +2073,7 @@ def build_html_report(
         </div>
       </section>
       """
-
+        # 5) Master Fallacy & Bias Map
             if esc_map:
                 html += f"""
       <section class="card-sub">
@@ -1781,7 +2087,7 @@ def build_html_report(
       </section>
       """
 
-        # 5) Condensed Executive Summary
+        # 6) Condensed Executive Summary
         if esc_investor:
             html += f"""
       <section class="card-sub">
@@ -1795,38 +2101,27 @@ def build_html_report(
       </section>
       """
 
-        # 6) Social snippet drafts – kept for your own marketing runs
+            # 7) Social snippet – single canonical template for all platforms
         html += f"""
-      <section class="card-sub">
-        <div class="collapsible-header" onclick="toggleSection('social-snippets')">
-          <span>Social Snippet Drafts</span>
-          <span class="collapsible-toggle" id="toggle-social-snippets">Show</span>
-        </div>
-        <div class="collapsible-body" id="section-social-snippets">
-          <p class="card-body-text">
-            Copy and lightly edit these for your MindPilot social posts. They’re auto-tuned
-            to this Cognitive Flight Report and meant for your own accounts
-            (X/Twitter, TikTok/Shorts, LinkedIn).
-          </p>
-
-          <div class="social-snippet">
-            <div class="social-label">X / Twitter</div>
-            <pre class="pre-block">{esc_twitter_snippet}</pre>
+        <section class="card-sub">
+          <div class="collapsible-header" onclick="toggleSection('social-snippets')">
+            <span>Copy-Ready Social Snippet</span>
+            <span class="collapsible-toggle" id="toggle-social-snippets">Show</span>
           </div>
+          <div class="collapsible-body" id="section-social-snippets">
+            <p class="card-body-text">
+              This single snippet is designed to be reused across X, LinkedIn, and other platforms.
+              Copy it, make minor edits if needed for tone or length, and always include your link
+              back to this specific Cognitive Flight Report.
+            </p>
 
-          <div class="social-snippet">
-            <div class="social-label">TikTok / Shorts caption</div>
-            <pre class="pre-block">{esc_tiktok_snippet}</pre>
+            <div class="social-snippet">
+              <pre class="pre-block">{esc_canonical_snippet}</pre>
+            </div>
           </div>
+        </section>
+        """
 
-          <div class="social-snippet">
-            <div class="social-label">LinkedIn post intro</div>
-            <pre class="pre-block">{esc_linkedin_snippet}</pre>
-          </div>
-        </div>
-      </section>
-    </section>
-    """
 
     elif esc_global_fallback:
         html += f"""
@@ -1864,6 +2159,12 @@ def build_html_report(
             It focuses on <strong>how</strong> arguments are made, not on adjudicating the
 
             real-world accuracy of every assertion.
+            <br/><br/>
+            <strong>Note on Quick vs. Full Report:</strong> MindPilot runs a single global scan in
+            
+            quick mode.  In full mode, it also runs section-level diagnostics, so scores may shift
+            
+            slightly within a small tolerance as the system "thinks harder" about the reasoning.
 
           </div>
 
@@ -2034,33 +2335,6 @@ def build_html_report(
         label.textContent = 'Hide';
       }}
     }}
-
-    document.addEventListener('DOMContentLoaded', function () {{
-      const btn = document.getElementById('download-social-card');
-      if (!btn || !window.html2canvas) {{
-        return;
-      }}
-
-      btn.addEventListener('click', function () {{
-        const card = document.getElementById('mp-social-card');
-        if (!card) {{
-          alert('Social card not found in this report.');
-          return;
-        }}
-
-        html2canvas(card).then(function (canvas) {{
-          const link = document.createElement('a');
-          link.download = 'mindpilot_social_card.png';
-          link.href = canvas.toDataURL('image/png');
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }}).catch(function (err) {{
-          console.error('Error capturing social card:', err);
-          alert('Could not generate an image of the social card.');
-        }});
-      }});
-    }});
   </script>
 
 </body>
