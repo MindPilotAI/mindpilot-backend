@@ -489,17 +489,70 @@ def build_social_card_html(
 
     fallacy_text = fallacy_snippet.strip() if fallacy_snippet else "Key fallacy and bias signals highlighted in the full report."
     questions_text = questions_snippet.strip() if questions_snippet else "See the full report for critical questions to stress-test this piece."
-    grok_text = (grok_line or "").strip()
+    # --- Grok enrichment: collapse to a single punchy line ---
+    grok_text_raw = (grok_line or "").strip()
+    grok_display = ""
+    if grok_text_raw:
+        # Take the first sentence-ish chunk
+        first_sentence = grok_text_raw.split(". ")[0].strip()
+        if first_sentence and not first_sentence.endswith("."):
+            first_sentence += "."
+        grok_display = first_sentence
 
+    # --- Footer link: shorter visible text, URL in the background ---
     if report_url:
-        footer_left = f"Full Cognitive Flight Report → {escape_html(report_url)}"
+        footer_left = (
+            'Full Cognitive Flight Report → '
+            f'<a href="{escape_html(report_url)}" '
+            'style="color: inherit; text-decoration: underline;">'
+            'View detailed analysis</a>'
+        )
     else:
         footer_left = "Full Cognitive Flight Report available in the MindPilot app."
+
+    # --- Build a tiny fallacy table: Pattern | Severity (top 3–4) ---
+    fallacy_table_html = ""
+    if fallacy_text:
+        raw_items = [item.strip() for item in fallacy_text.split(";") if item.strip()]
+        rows = []
+        for item in raw_items[:4]:
+            pattern = item
+            severity = ""
+            if "(" in item and item.endswith(")"):
+                base, _, tail = item.rpartition("(")
+                pattern = base.strip(" ,;")
+                severity = tail[:-1].strip()  # drop trailing ')'
+            rows.append((pattern, severity))
+
+        if rows:
+            row_html = "\n".join(
+                f"<tr><td>{escape_html(pattern)}</td>"
+                f"<td class=\"severity-cell\">{escape_html(severity or '')}</td></tr>"
+                for pattern, severity in rows
+            )
+            fallacy_table_html = f"""
+              <table class="social-fallacy-table">
+                <thead>
+                  <tr><th>Pattern</th><th>Severity</th></tr>
+                </thead>
+                <tbody>
+                {row_html}
+                </tbody>
+              </table>
+            """.rstrip()
+
+    fallacy_block_html = (
+            fallacy_table_html
+            or f'<p class="social-text">{escape_html(fallacy_text)}</p>'
+    )
 
     return f"""
       <section class="card-sub social-card" id="mp-social-card">
         <div class="social-header">
-          <div class="social-title">{escape_html(header_title)}</div>
+          <div class="social-title-block">
+            <div class="social-brandline">MindPilot · Your Co-Pilot for Critical Thinking</div>
+            <div class="social-title">{escape_html(header_title)}</div>
+          </div>
           <div class="social-logo">
             <!-- Adjust path if needed for your deployed assets -->
             <img src="/assets/mindpilot-symbol.png" alt="MindPilot symbol" />
@@ -517,7 +570,7 @@ def build_social_card_html(
         <div class="social-grid">
           <div>
             <div class="social-label">Fallacies &amp; bias signals</div>
-            <p class="social-text">{escape_html(fallacy_text)}</p>
+            {fallacy_block_html}
           </div>
           <div>
             <div class="social-label">Questions to ask</div>
@@ -527,9 +580,10 @@ def build_social_card_html(
     """ + (
         f"""
         <div class="social-grok">
-          Grok enrichment: {escape_html(grok_text)}
+          <span class="social-label-inline">Grok Enrichment</span>
+          <span class="social-grok-text">{escape_html(grok_display)}</span>
         </div>
-    """ if grok_text else ""
+    """ if grok_display else ""
     ) + f"""
         <div class="social-footer">
           <span>{footer_left}</span>
@@ -537,6 +591,7 @@ def build_social_card_html(
         </div>
       </section>
     """
+
 
 def build_social_page_html(
     *,
@@ -624,7 +679,7 @@ def build_social_page_html(
     }}
 
     /* Card styling (matches your social card, but tuned for standalone use) */
-    .social-card {{
+        .social-card {{
       border-radius: 1.1rem;
       border: 1px solid var(--border-subtle);
       padding: 1rem 1.1rem;
@@ -634,10 +689,21 @@ def build_social_page_html(
     }}
     .social-header {{
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 0.9rem;
       margin-bottom: 0.65rem;
+    }}
+    .social-title-block {{
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }}
+    .social-brandline {{
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #A0AEC0;
     }}
     .social-title {{
       font-size: 0.9rem;
@@ -645,8 +711,8 @@ def build_social_page_html(
       line-height: 1.35;
     }}
     .social-logo img {{
-      width: 64px;
-      height: 64px;
+      width: 72px;
+      height: 72px;
       display: block;
     }}
     .social-score-row {{
@@ -666,11 +732,12 @@ def build_social_page_html(
       text-align: center;
       min-width: 3.2rem;
     }}
-    .score-bar-track {{
+        .score-bar-track {{
       height: 0.5rem;
       border-radius: 999px;
       background: rgba(148, 163, 184, 0.45);
       overflow: hidden;
+      max-width: 260px;  /* roughly half the card width */
     }}
     .score-bar-fill {{
       height: 100%;
@@ -702,13 +769,51 @@ def build_social_page_html(
       line-height: 1.45;
       color: #E2E8F0;
     }}
-    .social-grok {{
-      margin-top: 0.45rem;
-      padding-top: 0.45rem;
-      border-top: 1px dashed rgba(148, 163, 184, 0.65);
+        .social-text {{
+      margin: 0;
+      font-size: 0.83rem;
+      line-height: 1.45;
+      color: #E2E8F0;
+    }}
+    .social-fallacy-table {{
+      width: 100%;
+      border-collapse: collapse;
       font-size: 0.8rem;
-      color: #C4F1F9;
+      color: #E2E8F0;
+    }}
+    .social-fallacy-table th,
+    .social-fallacy-table td {{
+      padding: 0.12rem 0.3rem;
+    }}
+    .social-fallacy-table thead th {{
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #A0AEC0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.6);
+    }}
+    .social-fallacy-table tbody tr:nth-child(odd) {{
+      background: rgba(15, 23, 42, 0.45);
+    }}
+    .social-fallacy-table .severity-cell {{
+      text-align: right;
+      white-space: nowrap;
+    }}
+
+        .social-grok {{
+      margin-top: 0.4rem;
       margin-bottom: 0.55rem;
+      font-size: 0.8rem;
+      color: #E2E8F0;
+    }}
+    .social-label-inline {{
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.7rem;
+      margin-right: 0.35rem;
+      color: #A0AEC0;
     }}
     .social-footer {{
       display: flex;
