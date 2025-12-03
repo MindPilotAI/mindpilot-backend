@@ -495,6 +495,7 @@ def build_social_card_html(
     if grok_text_raw:
         # Take the first sentence-ish chunk
         first_sentence = grok_text_raw.split(". ")[0].strip()
+        first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
         if first_sentence and not first_sentence.endswith("."):
             first_sentence += "."
         grok_display = first_sentence
@@ -716,11 +717,13 @@ def build_social_page_html(
       display: block;
     }}
     .social-score-row {{
-      display: grid;
-      grid-template-columns: auto 1fr;
+      display: flex;
       align-items: center;
-      gap: 0.45rem 0.6rem;
-      margin-bottom: 0.65rem;
+      gap: 0.6rem;
+    }}
+
+    .score-bar-wrapper {{
+      flex: 0 0 260px;   /* HARD width */
     }}
     .social-score-number {{
       font-size: 0.95rem;
@@ -732,7 +735,7 @@ def build_social_page_html(
       text-align: center;
       min-width: 3.2rem;
     }}
-        .score-bar-track {{
+    .score-bar-track {{
       height: 0.5rem;
       border-radius: 999px;
       background: rgba(148, 163, 184, 0.45);
@@ -776,30 +779,46 @@ def build_social_page_html(
       color: #E2E8F0;
     }}
     .social-fallacy-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.8rem;
-      color: #E2E8F0;
-    }}
-    .social-fallacy-table th,
-    .social-fallacy-table td {{
-      padding: 0.12rem 0.3rem;
-    }}
-    .social-fallacy-table thead th {{
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #A0AEC0;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.6);
-    }}
-    .social-fallacy-table tbody tr:nth-child(odd) {{
-      background: rgba(15, 23, 42, 0.45);
-    }}
-    .social-fallacy-table .severity-cell {{
-      text-align: right;
-      white-space: nowrap;
-    }}
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  color: #E2E8F0;
+}}
+.social-fallacy-table th,
+.social-fallacy-table td {{
+  padding: 0.2rem 0.4rem;
+  vertical-align: top;
+}}
+
+.social-fallacy-table thead th {{
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #A0AEC0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.5);
+}}
+
+.social-fallacy-table tbody tr {{
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}}
+
+.social-fallacy-table tbody tr:last-child {{
+  border-bottom: none;
+}}
+
+.social-fallacy-table td:first-child {{
+  width: 70%;
+}}
+
+.social-fallacy-table .severity-cell {{
+  text-align: right;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #FBD38D; /* gentle attention */
+}}
+
 
         .social-grok {{
       margin-top: 0.4rem;
@@ -1382,7 +1401,9 @@ def build_html_report(
         """
         score_bar_html = f"""
         <div class="score-bar-container">
-          <div class="score-bar-track">
+          <div class="score-bar-wrapper">
+            <div class="score-bar-track">
+            </div>
             <div class="score-bar-fill" style="width: {overall_score_100}%"></div>
           </div>
           <div class="score-bar-label">{overall_score_100}/100 overall reasoning quality</div>
