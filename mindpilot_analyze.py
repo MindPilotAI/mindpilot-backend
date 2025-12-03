@@ -443,6 +443,8 @@ Here are your chunk-level analyses to base this on:
 """
     return prompt.strip()
 
+# Standalone social snippet page, reusing build_social_card_html so it matches
+# the card rendered at the top of the full report.
 
 
 def build_social_card_html(
@@ -771,6 +773,9 @@ def build_social_page_html(
 </html>
 """
 
+# Social card: this is the same design used on /social/{report_id}
+# We render it at the top of the full report for continuity from social → report.
+
 def build_html_report(
     source_url,
     report_id,
@@ -785,7 +790,11 @@ def build_html_report(
         "tiktok": "@mindpilotai",
         "linkedin": "MindPilot · Cognitive Flight Report",
     }
-
+    # ------------------------------------------------------------------
+    # Temporary default: report_url will be wired properly later.
+    # For now, always define it so we never hit an UnboundLocalError.
+    # ------------------------------------------------------------------
+    report_url = None
     """
     Build the MindPilot Cognitive Flight Report HTML.
 
@@ -1274,24 +1283,6 @@ def build_html_report(
           <div class="score-bar-label">{overall_score_100}/100 overall reasoning quality</div>
         </div>
         """
-
-    # ---------- meta + social text snippets ----------
-
-    source_type = infer_source_type(source_url or "")
-    # Build social-card HTML (only if we have at least some signal)
-    social_card_html = ""
-    if (overall_score_100 is not None) or fallacy_snippet or questions_snippet:
-        social_card_html = build_social_card_html(
-            source_type=source_type,
-            overall_score_100=overall_score_100,
-            score_label=label_for_chip or "Reasoning profile overview",
-            fallacy_snippet=fallacy_snippet,
-            questions_snippet=questions_snippet,
-            grok_line=grok_line,
-            report_url=report_url,
-            escape_html=escape_html,
-        )
-
     depth_text = depth_label(depth)
 
     summary_body = extract_summary_body(full_summary)
@@ -1990,7 +1981,6 @@ def build_html_report(
      }}
 
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
     <div class="page">
