@@ -1050,18 +1050,23 @@ def build_html_report(
         """
         Parse the markdown-style Master Fallacy & Bias Map into an HTML table.
 
-        It is tolerant of slightly different markdown formats. It tries to handle:
+        Expected input pattern (what the global prompt asks for):
 
-        - Category lines, e.g.:
-            - **Logical Fallacies**
-            - **Cognitive Biases**
-            ### Logical Fallacies
-        - Item lines, e.g.:
-            - **Confirmation Bias**: description ... (High)
-            - Confirmation Bias: description ... High
+        - **Logical Fallacies**
+          - **False Cause / Post Hoc**: description ... (High)
+          - **Hasty Generalization**: description ... (Medium)
 
-        and pulls "High / Medium / Low" into a separate Severity column while
-        stripping it from the description.
+        - **Cognitive Biases**
+          - **Confirmation Bias**: description ... (High)
+
+        - **Rhetorical / Persuasion Tactics**
+          - **Appeal to Emotion**: description ... (Medium)
+
+        - **Manipulative / Conditioning Patterns**
+          - **Bandwagon Conditioning**: description ... (Low)
+
+        We turn that into rows:
+            Category | Name | Description (no severity text) | Severity
         """
         if not raw_map:
             return ""
@@ -1076,7 +1081,7 @@ def build_html_report(
             if not stripped:
                 continue
 
-            # --- CATEGORY LINES ---------------------------------------------
+            # ---------- CATEGORY LINES ----------
             # Normalize out bold markers and trailing colons
             normalized = stripped.replace("**", "").rstrip(":").strip()
 
@@ -1090,108 +1095,87 @@ def build_html_report(
             if m_cat:
                 maybe_cat = m_cat.group(1).strip()
 
-                # Only treat as a category if:
-                # - there is NO ":" (so "Confirmation Bias: ..." is NOT a category), and
-                # - it looks like a high-level group name
-                if (
-                        ":" not in maybe_cat
-                        and len(maybe_cat) <= 80
-                        and (
-                        re.search(r"fallac", maybe_cat, re.I)
-                        or re.search(r"bias", maybe_cat, re.I)
-                        or re.search(r"rhetoric|persuasion", maybe_cat, re.I)
-                        or re.search(r"manipulat|conditioning", maybe_cat, re.I)
-                )
-                ):
+                # Only treat as a category if it doesn't look like an item
+                if ":" not in maybe_cat:
                     current_category = maybe_cat
                     is_category_line = True
 
             if is_category_line:
-                # We already handled this as a category; skip item parsing for this line.
+                # Skip further parsing for this line
                 continue
 
-            # --- ITEM LINES -------------------------------------------------
+            # ---------- ITEM LINES ----------
             # Most common pattern:
-            # - **Name**: description...
-            m_item = re.match(r"^[-*]\s*\*\*(.+?)\*\*\s*:\s*(.+)$", stripped)
+            #   - **Name**: description... (High)
+            m_item = re.match(
+                r"^[-*]\s*\*\*(.+?)\*\*\s*:\s*(.+)$",
+                stripped,
+            )
 
-            # Fallback: "- Name: description..."
+            # Fallback:
+            #   - Name: description... (High)
             if not m_item:
-                m_item = re.match(r"^[-*]\s*([^:]+?)\s*:\s*(.+)$", stripped)
+                m_item = re.match(r"^[-*]\s*([^:]+?):\s*(.+)$", stripped)
 
             if not m_item:
                 continue
 
             name = m_item.group(1).strip()
             desc = m_item.group(2).strip()
+
+            # Pull severity "(High|Medium|Low)" out of the tail if present
             severity = ""
+            m_sev = re.search(r"\((High|Medium|Low)\)\s*$", desc)
+            if m_sev:
+                severity = m_sev.group(1)
+                # Trim the "(High)" off the description
+                desc = desc[: m_sev.start()].rstrip(" .;-")
 
-            # Pull "(High|Medium|Low)" from the end if present
-            m_sev_trailing = re.search(r"\((High|Medium|Low)\)\s*\.?\s*$", desc)
-            if m_sev_trailing:
-                severity = m_sev_trailing.group(1)
-                desc = re.sub(r"\s*\((High|Medium|Low)\)\s*\.?\s*$", "", desc).strip()
-
-            # If still no severity, look anywhere in the string
-            if not severity:
-                m_sev_inline = re.search(r"\b(High|Medium|Low)\b", desc)
-                if m_sev_inline:
-                    severity = m_sev_inline.group(1)
-                    desc = re.sub(
-                        r"\s*\(?\b(High|Medium|Low)\b\)?",
-                        "",
-                        desc
-                    ).strip()
-
-            if not current_category:
-                current_category = "Pattern group"
-
-            rows.append((current_category, name, desc, severity))
+            rows.append(
+                (
+                    current_category or "Pattern group",
+                    name,
+                    desc,
+                    severity,
+                )
+            )
 
         if not rows:
-            # Nothing matched – let the caller fall back to the raw markdown
             return ""
 
-        # Sort by severity (High → Medium → Low → none), then category, then name
-        severity_rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
-        rows.sort(
-            key=lambda r: (
-                severity_rank.get(r[3], 3),
-                r[0].lower(),
-                r[1].lower(),
-            )
-        )
-
-        body_rows = []
+        # ---------- Build HTML ----------
+        body_rows: list[str] = []
         for category, name, desc, severity in rows:
-            sev_label = severity or "—"
-            sev_class = severity.lower() if severity else "none"
+            sev_class = (
+                f"severity-{severity.lower()}" if severity else "severity-none"
+            )
             body_rows.append(
                 f"""
               <tr>
-                <td class="fallacy-type col-type">...</td>
-                <td class="fallacy-name col-name">...</td>
-                <td class="fallacy-desc col-desc">...</td>
-                <td class="fallacy-severity col-sev">...</td>
+                <td class="fallacy-type col-type">{escape_html(category)}</td>
+                <td class="fallacy-name col-name">{escape_html(name)}</td>
+                <td class="fallacy-desc col-desc">{escape_html(desc)}</td>
+                <td class="fallacy-severity col-sev {sev_class}">
+                  {escape_html(severity)}
+                </td>
               </tr>
                 """
             )
 
         return (
                 """
-                    <div class="fallacy-table-wrapper">
-                      <table class="fallacy-table">
-                        <thead>
-                          <tr>
-                            <th class="col-type">Pattern type</th>
-                            <th class="col-name">Fallacy / bias</th>
-                            <th class="col-desc">How it shows up in this piece</th>
-                            <th class="col-sev">Severity</th>
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                    """
+                <div class="fallacy-table-wrapper">
+                  <table class="fallacy-table">
+                    <thead>
+                      <tr>
+                        <th class="col-type">Pattern type</th>
+                        <th class="col-name">Fallacy / bias</th>
+                        <th class="col-desc">How it shows up in this piece</th>
+                        <th class="col-sev">Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                """
                 + "".join(body_rows)
                 + """
                 </tbody>
@@ -1200,7 +1184,6 @@ def build_html_report(
             """
         )
 
-        return table_html
     def summarize_fallacies_for_social(raw_map: str) -> str:
         """
         Build a short, 1–2 item summary like:
