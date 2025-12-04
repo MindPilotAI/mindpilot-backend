@@ -456,6 +456,7 @@ def build_social_card_html(
     questions_snippet: str,
     grok_line: str | None,
     report_url: str | None,
+    source_url: str | None,
     escape_html,
 ) -> str:
     """
@@ -476,6 +477,18 @@ def build_social_card_html(
     # Title: keep it soft, not cocky
     header_title = f"Reasoning snapshot for this {source_type.lower()}"
 
+    # Snapshot label that can link to the original article/media
+    link_label = "Reasoning Snapshot for this Article / Media"
+    if source_url:
+        header_title_html = (
+            f'<a href="{escape_html(source_url)}" '
+            'class="social-snapshot-link" target="_blank" '
+            'rel="noopener noreferrer">'
+            f'{escape_html(link_label)}</a>'
+        )
+    else:
+        header_title_html = escape_html(link_label)
+
     if overall_score_100 is None:
         score_display = "Reasoning snapshot"
         bar_width = 100
@@ -486,9 +499,24 @@ def build_social_card_html(
         bar_width = overall_score_100
         # Caption just carries the qualitative label
         bar_caption = score_label
+    # Break questions into up to two separate lines (we join with " · " upstream)
+    question_lines: list[str] = []
+    if questions_text:
+        parts = [p.strip() for p in questions_text.split("·") if p.strip()]
+        question_lines = parts[:2]
+
+    if question_lines:
+        questions_block_html = (
+            '<ul class="social-questions">'
+            + "".join(f"<li>{escape_html(q)}</li>" for q in question_lines)
+            + "</ul>"
+        )
+    else:
+        questions_block_html = f'<p class="social-text">{escape_html(questions_text)}</p>'
 
     fallacy_text = fallacy_snippet.strip() if fallacy_snippet else "Key fallacy and bias signals highlighted in the full report."
     questions_text = questions_snippet.strip() if questions_snippet else "See the full report for critical questions to stress-test this piece."
+
     # --- Grok enrichment: collapse to a single punchy line ---
     grok_text_raw = (grok_line or "").strip()
     grok_display = ""
@@ -526,7 +554,7 @@ def build_social_card_html(
     if fallacy_text:
         raw_items = [item.strip() for item in fallacy_text.split(";") if item.strip()]
         rows = []
-        for item in raw_items[:4]:
+        for item in raw_items[:3]:
             pattern = item
             severity = ""
             if "(" in item and item.endswith(")"):
@@ -562,7 +590,7 @@ def build_social_card_html(
         <div class="social-header">
           <div class="social-title-block">
             <div class="social-brandline">MindPilot · Your Co-Pilot for Critical Thinking</div>
-            <div class="social-title">{escape_html(header_title)}</div>
+                    <div class="social-title">{header_title_html}</div>
           </div>
           <div class="social-logo">
             <!-- Adjust path if needed for your deployed assets -->
@@ -583,10 +611,10 @@ def build_social_card_html(
             <div class="social-label">Fallacies &amp; bias signals</div>
             {fallacy_block_html}
           </div>
-          <div>
-            <div class="social-label">Questions to ask</div>
-            <p class="social-text">{escape_html(questions_text)}</p>
-          </div>
+            <div>
+                <div class="social-label">Questions to Ask Yourself</div>
+                {questions_block_html}
+            </div>
         </div>
     """ + (
         f"""
@@ -602,7 +630,6 @@ def build_social_card_html(
         </div>
       </section>
     """
-
 
 def build_social_page_html(
     *,
@@ -640,9 +667,9 @@ def build_social_page_html(
         questions_snippet=questions_snippet,
         grok_line=grok_line,        # ⬅️ Grok one-liner flows straight into the card
         report_url=report_url,
+        source_url=None,     # no direct source link on teh standalone snippet page (for now)
         escape_html=_escape_html,
     )
-
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -690,7 +717,7 @@ def build_social_page_html(
     }}
 
     /* Card styling (matches your social card, but tuned for standalone use) */
-        .social-card {{
+    .social-card {{
       border-radius: 1.1rem;
       border: 1px solid var(--border-subtle);
       padding: 1rem 1.1rem;
@@ -731,7 +758,15 @@ def build_social_page_html(
       align-items: center;
       gap: 0.6rem;
     }}
-
+    .social-questions {{
+      margin: 0;
+      padding-left: 1.1rem;
+      font-size: 0.83rem;
+      color: #E2E8F0;
+    }}
+    .social-questions li {{
+      margin-bottom: 0.15rem;
+    }}
     .score-bar-wrapper {{
       flex: 0 0 260px;   /* HARD width */
     }}
@@ -819,7 +854,7 @@ def build_social_page_html(
 }}
 
 .social-fallacy-table td:first-child {{
-  width: 70%;
+  width: 75%;
 }}
 
 .social-fallacy-table .severity-cell {{
@@ -1312,11 +1347,16 @@ def build_html_report(
     grok_line = ""
     if grok_insights:
         for line in grok_insights.splitlines():
-            if line.strip():
-                grok_line = line.strip()
-                if len(grok_line) > 160:
-                    grok_line = grok_line[:157].rstrip() + "…"
-                break
+            candidate = line.strip()
+            if not candidate:
+                continue
+            # Skip the banner heading like "## MindPilot × Grok Live Context & Creative Debrief"
+            if re.search(r"mindpilot\s*×\s*grok", candidate, re.I):
+                continue
+            grok_line = candidate
+            if len(grok_line) > 160:
+                grok_line = grok_line[:157].rstrip() + "…"
+            break
 
     # ---------- dimension bars from Rationality Profile ----------
 
@@ -1451,7 +1491,8 @@ def build_html_report(
             fallacy_snippet=fallacy_snippet,
             questions_snippet=questions_snippet,
             grok_line=grok_line,
-            report_url=report_url,  # <-- now points to this specific report
+            report_url=report_url,
+            source_url=source_url,  # <-- NEW: link snapshot text to the source
             escape_html=escape_html,
         )
 
@@ -1912,6 +1953,15 @@ def build_html_report(
     .social-snippet {{
       margin-top: 0.6rem;
       margin-bottom: 0.6rem;
+    }}
+    .social-snapshot-link {{
+      font-size: 0.82rem;
+      color: #E2E8F0;
+      text-decoration: underline;
+    }}
+    .social-snapshot-link:hover {{
+      text-decoration: none;
+      opacity: 0.9;
     }}
     .social-label {{
       font-size: 0.78rem;
