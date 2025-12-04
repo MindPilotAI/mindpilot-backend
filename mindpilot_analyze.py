@@ -493,12 +493,22 @@ def build_social_card_html(
     grok_text_raw = (grok_line or "").strip()
     grok_display = ""
     if grok_text_raw:
-        # Take the first sentence-ish chunk
-        first_sentence = grok_text_raw.split(". ")[0].strip()
-        first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
-        if first_sentence and not first_sentence.endswith("."):
-            first_sentence += "."
-        grok_display = first_sentence
+        # Walk lines until we find a real content line (skip the branding header)
+        for line in grok_text_raw.splitlines():
+            candidate = line.strip()
+            if not candidate:
+                continue
+            # Skip the banner-like heading such as "## MindPilot × Grok Live Context & Creative Debrief"
+            if re.search(r"mindpilot\s*×\s*grok", candidate, re.I):
+                continue
+
+            # Take just the first sentence-ish chunk from that line
+            first_sentence = candidate.split(". ")[0].strip()
+            first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
+            if first_sentence and not first_sentence.endswith("."):
+                first_sentence += "."
+            grok_display = first_sentence
+            break
 
     # --- Footer link: shorter visible text, URL in the background ---
     if report_url:
@@ -1124,12 +1134,13 @@ def build_html_report(
             desc = m_item.group(2).strip()
 
             # Pull severity "(High|Medium|Low)" out of the tail if present
+            # Allow an optional period after the closing parenthesis, e.g. "(High)."
             severity = ""
-            m_sev = re.search(r"\((High|Medium|Low)\)\s*$", desc)
+            m_sev = re.search(r"\((High|Medium|Low)\)\.?\s*$", desc)
             if m_sev:
                 severity = m_sev.group(1)
                 # Trim the "(High)" off the description
-                desc = desc[: m_sev.start()].rstrip(" .;-")
+                desc = desc[: m_sev.start()].rstrip(" .-")
 
             rows.append(
                 (
@@ -1184,45 +1195,58 @@ def build_html_report(
             """
         )
 
-    def summarize_fallacies_for_social(raw_map: str) -> str:
+    def summarize_fallacies_for_social(master_map: str) -> str:
         """
-        Build a short, 1–2 item summary like:
-        'False Cause / Post Hoc (High); Appeal to Emotion (High)'
-        for use in the social card.
+        Build a compact "Name (Severity)" list from the Master Fallacy & Bias Map.
+
+        Example output:
+            "False Cause / Post Hoc (High); Hasty Generalization (High); Cherry-Picking (Medium)"
         """
-        if not raw_map:
+        if not master_map:
             return ""
 
-        items: list[tuple[str, str, str]] = []
-        for line in raw_map.splitlines():
+        items: list[str] = []
+
+        for line in master_map.splitlines():
             stripped = line.strip()
-            if not stripped:
+            if not stripped.startswith("-"):
                 continue
-            m_item = re.match(
-                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\((High|Medium|Low)\))?\s*$",
+
+            # Most common pattern:
+            #   - **False Cause / Post Hoc**: description ... (High).
+            m = re.match(
+                r"^-\s*\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\((High|Medium|Low)\)\.?\s*)?$",
                 stripped,
             )
-            if not m_item:
+            # Fallback:
+            #   - False Cause / Post Hoc: description ... (High).
+            if not m:
+                m = re.match(
+                    r"^-\s*([^:]+?):\s*(.+?)(?:\s*\((High|Medium|Low)\)\.?\s*)?$",
+                    stripped,
+                )
+
+            if not m:
                 continue
-            name = m_item.group(1).strip()
-            severity = (m_item.group(3) or "").strip()
-            items.append((name, severity))
 
-        if not items:
-            return ""
+            name = m.group(1).strip()
+            severity = (m.group(3) or "").strip()
 
-        # Prefer High -> Medium -> Low
-        rank = {"High": 0, "Medium": 1, "Low": 2, "": 3, None: 3}
-        items.sort(key=lambda x: rank.get(x[1], 3))
-
-        top = items[:2]
-        parts = []
-        for name, sev in top:
-            if sev:
-                parts.append(f"{name} ({sev})")
+            if severity:
+                items.append(f"{name} ({severity})")
             else:
-                parts.append(name)
-        return "; ".join(parts)
+                items.append(name)
+
+        # De-dupe but preserve order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for it in items:
+            if it not in seen:
+                seen.add(it)
+                unique.append(it)
+
+        # At most 6 items for social
+        return "; ".join(unique[:6])
 
     def summarize_questions_for_social(raw_questions: str) -> str:
         """
@@ -1555,6 +1579,7 @@ def build_html_report(
 <head>
   <meta charset="UTF-8" />
   <title>MindPilot – Cognitive Flight Report</title>
+  <link rel="icon" href="/assets/mindpilot-symbol.png" type="image/png" />  
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {{
@@ -2044,10 +2069,15 @@ def build_html_report(
        font-weight: 700;
        white-space: nowrap;
      }}
-     .social-score-row .score-bar-track {{
-       height: 0.5rem;
-       background: rgba(148, 163, 184, 0.45);
-     }}
+           .social-score-row .score-bar-track {{
+        position: relative;
+        height: 0.5rem;
+        background: rgba(148, 163, 184, 0.45);
+        border-radius: 999px;
+        overflow: hidden;
+        max-width: 260px;  /* keep the bar to ~half the card width */
+      }}
+
      .social-score-row .score-bar-label {{
        grid-column: 1 / -1;
        font-size: 0.78rem;
