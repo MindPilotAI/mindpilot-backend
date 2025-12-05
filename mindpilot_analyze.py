@@ -465,17 +465,29 @@ def build_social_card_html(
     - on the standalone /social page.
     """
 
-    # --- Header line: MindPilot + snapshot title (optionally link to source/report) ---
+    # --- Header line: MindPilot + snapshot title (link to source when possible) ---
     brandline = "MindPilot · Your Co-Pilot for Critical Thinking"
+    snapshot_label = "Reasoning Snapshot for this Article / Media"
 
-    if report_url:
+    if source_url:
+        # Prefer linking directly to the original article / media
         header_title_html = (
-            'Reasoning snapshot for this article / media · '
+            f'<a href="{escape_html(source_url)}" '
+            'class="social-source-link" '
+            'style="color: inherit; text-decoration: underline;">'
+            f"{escape_html(snapshot_label)}</a>"
+        )
+    elif report_url:
+        # Fallback: link to the MindPilot report if we don't have the original URL
+        header_title_html = (
             f'<a href="{escape_html(report_url)}" '
-            'class="social-source-link">View original source</a>'
+            'class="social-source-link" '
+            'style="color: inherit; text-decoration: underline;">'
+            f"{escape_html(snapshot_label)}</a>"
         )
     else:
-        header_title_html = "Reasoning snapshot for this article / media"
+        # Last resort: plain text
+        header_title_html = snapshot_label
 
     header_title_html = header_title_html.strip()
 
@@ -597,8 +609,10 @@ def build_social_card_html(
             <div class="social-title">{header_title_html}</div>
           </div>
           <div class="social-logo">
-            <!-- Adjust path if needed for your deployed assets -->
-            <img src="/assets/mindpilot-symbol.png" alt="MindPilot symbol" />
+            <img
+               src="https://mind-pilot.ai/assets/mindpilot-symbol.png"
+               alt="MindPilot symbol"
+            />
           </div>
         </div>
 
@@ -2526,173 +2540,172 @@ def build_html_report(
 """
     return html
 
-# ---------- MAIN PIPELINE ----------
-
-def main():
-    print("=== MindPilot One-Step Reasoning Analysis ===")
-    youtube_url = input("Enter YouTube URL: ").strip()
-
-    # 1) Extract video ID
-    try:
-        video_id = extract_video_id(youtube_url)
-        print(f"[1/4] Extracted video ID: {video_id}")
-    except ValueError as e:
-        print(f"Error: {e}")
-        return
-
-    # 2) Fetch transcript
-    try:
-        transcript_text = fetch_transcript_text(video_id)
-    except RuntimeError as e:
-        print(f"Error fetching transcript: {e}")
-        return
-
-    # 2b) Safety classification on the transcript (forbidden-content pre-filter)
-    attach_disclaimer = False
-    try:
-        classification = classify_content(transcript_text)
-    except Exception as e:
-        print(f"[safety] Classifier failed ({e}); defaulting to allow.")
-        classification = {
-            "classification": "allow",
-            "reason": "classifier error",
-            "allowed_scope": "",
-        }
-
-    cls = (classification.get("classification") or "allow").lower()
-    reason = classification.get("reason", "")
-
-    if cls == "block":
-        print("\n=== MindPilot Safety Gate ===")
-        print("MindPilot cannot analyze this content as written.")
-        if reason:
-            print(f"Reason: {reason}")
-        print(
-            "\nYou may instead:\n"
-            "- Analyze public news coverage about this topic\n"
-            "- Submit a non-instructional excerpt\n"
-            "- Frame your request around rhetoric or reasoning patterns"
-        )
-        return
-
-    if cls == "restricted":
-        attach_disclaimer = True
-        print("\n[Note] This content is sensitive.")
-        if reason:
-            print(f"Reason: {reason}")
-        print("MindPilot will analyze reasoning patterns only (no advice or endorsement).")
-
-    # 3) Save raw transcript
-    save_text_to_file(transcript_text, TRANSCRIPT_FILE)
-    print(f"[2/4] Transcript saved to: {TRANSCRIPT_FILE}")
-    print(f"      Transcript length (characters): {len(transcript_text)}")
-
-    # 4) Chunk text
-    chunks = chunk_text(transcript_text, MAX_CHARS_PER_CHUNK)
-    total_chunks = len(chunks)
-    print(f"[3/4] Number of chunks created: {total_chunks}")
-
-    # 5) Build prompt pack (for manual ChatGPT use)
-    lines = []
-    lines.append("# MindPilot Reasoning Analysis Prompt Pack\n")
-    lines.append(f"_Source URL_: {youtube_url}\n")
-    lines.append(f"_Video ID_: `{video_id}`\n")
-    lines.append(f"_Chunks_: {total_chunks}\n")
-    lines.append("\n---\n\n")
-
-    for idx, chunk in enumerate(chunks):
-        chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
-        lines.append(chunk_prompt)
-
-    # Add global prompts (manual, copy/paste style)
-    lines.append(build_global_prompts())
-
-    with open(PROMPT_PACK_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-    print(f"[4/4] Prompt pack written to: {PROMPT_PACK_FILE}")
-
-    # ---------- AUTOMATIC ANALYSIS SECTION ----------
-
-    print("\n=== Running automatic MindPilot analysis via OpenAI API ===")
-    chunk_analyses = []  # store each chunk's analysis for global summary
-
-    report_lines = []
-    report_lines.append("# MindPilot Reasoning Analysis Report\n")
-    report_lines.append(f"_Source URL_: {youtube_url}\n")
-    report_lines.append(f"_Video ID_: `{video_id}`\n")
-    report_lines.append(f"_Chunks_: {total_chunks}\n")
-
-    if attach_disclaimer:
-        report_lines.append(
-            "\n> Safety note: This content was classified as sensitive. "
-            "MindPilot is analyzing reasoning patterns only and is not "
-            "providing advice, instructions, or endorsement.\n"
-        )
-
-    report_lines.append("\n---\n\n")
-
-    # Per-chunk analysis
-    for idx, chunk in enumerate(chunks):
-        print(f"  -> Analyzing chunk {idx + 1}/{total_chunks}...")
-        chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
-        analysis = run_mindpilot_analysis(chunk_prompt)
-
-        chunk_analyses.append(analysis)
-
-        report_lines.append(f"## Chunk {idx + 1} of {total_chunks} — MindPilot Analysis\n\n")
-        report_lines.append(analysis)
-        report_lines.append("\n\n---\n\n")
-
-    report_path = "mindpilot_analysis_report.md"
-    with open(report_path, "w", encoding="utf-8") as rf:
-        rf.write("\n".join(report_lines))
-
-    print(f"\nChunk-level analysis report written to: {report_path}")
-
-    # ----- AUTOMATIC GLOBAL SUMMARY (no prompts) -----
-
-    global_report = ""
-
-    print("\n  -> Automatically generating global summary...")
-    global_prompt = build_global_summary_prompt(chunk_analyses)
-    global_report = run_mindpilot_analysis(global_prompt)
-
-    if attach_disclaimer:
-        global_report = (
-            "Safety note: This content was classified as sensitive; "
-            "MindPilot is analyzing reasoning patterns only and is not providing "
-            "advice, instructions, or endorsement.\n\n"
-            + global_report
-        )
-
-    with open(report_path, "a", encoding="utf-8") as rf:
-        rf.write("\n\n# Global MindPilot Reasoning Summary\n\n")
-        rf.write(global_report)
-        rf.write("\n")
-
-    print(f"Global summary automatically appended to: {report_path}")
-
-    # ----- Build HTML report -----
-    html_report = build_html_report(
-        source_url=youtube_url,
-        video_id=video_id,
-        total_chunks=total_chunks,
-        chunk_analyses=chunk_analyses,
-        global_report=global_report,
-        depth="full",
-    )
-    html_path = "mindpilot_report.html"
-    with open(html_path, "w", encoding="utf-8") as hf:
-        hf.write(html_report)
-
-    print(f"\nHTML report written to: {html_path}")
-    print("\nAll done! Open the markdown OR HTML report file to review the analysis.\n")
-
-
-if __name__ == "__main__":
-    main()
-
+# # ---------- MAIN PIPELINE   (legacy CLI, currently unused)
+#
+# def main():
+#     print("=== MindPilot One-Step Reasoning Analysis ===")
+#     youtube_url = input("Enter YouTube URL: ").strip()
+#
+#     # 1) Extract video ID
+#     try:
+#         video_id = extract_video_id(youtube_url)
+#         print(f"[1/4] Extracted video ID: {video_id}")
+#     except ValueError as e:
+#         print(f"Error: {e}")
+#         return
+#
+#     # 2) Fetch transcript
+#     try:
+#         transcript_text = fetch_transcript_text(video_id)
+#     except RuntimeError as e:
+#         print(f"Error fetching transcript: {e}")
+#         return
+#
+#     # 2b) Safety classification on the transcript (forbidden-content pre-filter)
+#     attach_disclaimer = False
+#     try:
+#         classification = classify_content(transcript_text)
+#     except Exception as e:
+#         print(f"[safety] Classifier failed ({e}); defaulting to allow.")
+#         classification = {
+#             "classification": "allow",
+#             "reason": "classifier error",
+#             "allowed_scope": "",
+#         }
+#
+#     cls = (classification.get("classification") or "allow").lower()
+#     reason = classification.get("reason", "")
+#
+#     if cls == "block":
+#         print("\n=== MindPilot Safety Gate ===")
+#         print("MindPilot cannot analyze this content as written.")
+#         if reason:
+#             print(f"Reason: {reason}")
+#         print(
+#             "\nYou may instead:\n"
+#             "- Analyze public news coverage about this topic\n"
+#             "- Submit a non-instructional excerpt\n"
+#             "- Frame your request around rhetoric or reasoning patterns"
+#         )
+#         return
+#
+#     if cls == "restricted":
+#         attach_disclaimer = True
+#         print("\n[Note] This content is sensitive.")
+#         if reason:
+#             print(f"Reason: {reason}")
+#         print("MindPilot will analyze reasoning patterns only (no advice or endorsement).")
+#
+#     # 3) Save raw transcript
+#     save_text_to_file(transcript_text, TRANSCRIPT_FILE)
+#     print(f"[2/4] Transcript saved to: {TRANSCRIPT_FILE}")
+#     print(f"      Transcript length (characters): {len(transcript_text)}")
+#
+#     # 4) Chunk text
+#     chunks = chunk_text(transcript_text, MAX_CHARS_PER_CHUNK)
+#     total_chunks = len(chunks)
+#     print(f"[3/4] Number of chunks created: {total_chunks}")
+#
+#     # 5) Build prompt pack (for manual ChatGPT use)
+#     lines = []
+#     lines.append("# MindPilot Reasoning Analysis Prompt Pack\n")
+#     lines.append(f"_Source URL_: {youtube_url}\n")
+#     lines.append(f"_Video ID_: `{video_id}`\n")
+#     lines.append(f"_Chunks_: {total_chunks}\n")
+#     lines.append("\n---\n\n")
+#
+#     for idx, chunk in enumerate(chunks):
+#         chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
+#         lines.append(chunk_prompt)
+#
+#     # Add global prompts (manual, copy/paste style)
+#     lines.append(build_global_prompts())
+#
+#     with open(PROMPT_PACK_FILE, "w", encoding="utf-8") as f:
+#         f.write("\n".join(lines))
+#
+#     print(f"[4/4] Prompt pack written to: {PROMPT_PACK_FILE}")
+#
+#     # ---------- AUTOMATIC ANALYSIS SECTION ----------
+#
+#     print("\n=== Running automatic MindPilot analysis via OpenAI API ===")
+#     chunk_analyses = []  # store each chunk's analysis for global summary
+#
+#     report_lines = []
+#     report_lines.append("# MindPilot Reasoning Analysis Report\n")
+#     report_lines.append(f"_Source URL_: {youtube_url}\n")
+#     report_lines.append(f"_Video ID_: `{video_id}`\n")
+#     report_lines.append(f"_Chunks_: {total_chunks}\n")
+#
+#     if attach_disclaimer:
+#         report_lines.append(
+#             "\n> Safety note: This content was classified as sensitive. "
+#             "MindPilot is analyzing reasoning patterns only and is not "
+#             "providing advice, instructions, or endorsement.\n"
+#         )
+#
+#     report_lines.append("\n---\n\n")
+#
+#     # Per-chunk analysis
+#     for idx, chunk in enumerate(chunks):
+#         print(f"  -> Analyzing chunk {idx + 1}/{total_chunks}...")
+#         chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
+#         analysis = run_mindpilot_analysis(chunk_prompt)
+#
+#         chunk_analyses.append(analysis)
+#
+#         report_lines.append(f"## Chunk {idx + 1} of {total_chunks} — MindPilot Analysis\n\n")
+#         report_lines.append(analysis)
+#         report_lines.append("\n\n---\n\n")
+#
+#     report_path = "mindpilot_analysis_report.md"
+#     with open(report_path, "w", encoding="utf-8") as rf:
+#         rf.write("\n".join(report_lines))
+#
+#     print(f"\nChunk-level analysis report written to: {report_path}")
+#
+#     # ----- AUTOMATIC GLOBAL SUMMARY (no prompts) -----
+#
+#     global_report = ""
+#
+#     print("\n  -> Automatically generating global summary...")
+#     global_prompt = build_global_summary_prompt(chunk_analyses)
+#     global_report = run_mindpilot_analysis(global_prompt)
+#
+#     if attach_disclaimer:
+#         global_report = (
+#             "Safety note: This content was classified as sensitive; "
+#             "MindPilot is analyzing reasoning patterns only and is not providing "
+#             "advice, instructions, or endorsement.\n\n"
+#             + global_report
+#         )
+#
+#     with open(report_path, "a", encoding="utf-8") as rf:
+#         rf.write("\n\n# Global MindPilot Reasoning Summary\n\n")
+#         rf.write(global_report)
+#         rf.write("\n")
+#
+#     print(f"Global summary automatically appended to: {report_path}")
+#
+#     # ----- Build HTML report -----
+#     html_report = build_html_report(
+#         source_url=youtube_url,
+#         video_id=video_id,
+#         total_chunks=total_chunks,
+#         chunk_analyses=chunk_analyses,
+#         global_report=global_report,
+#         depth="full",
+#     )
+#     html_path = "mindpilot_report.html"
+#     with open(html_path, "w", encoding="utf-8") as hf:
+#         hf.write(html_report)
+#
+#     print(f"\nHTML report written to: {html_path}")
+#     print("\nAll done! Open the markdown OR HTML report file to review the analysis.\n")
+#
+#
+# if __name__ == "__main__":
+#     main()
 
     main()
 
