@@ -456,89 +456,91 @@ def build_social_card_html(
     questions_snippet: str,
     grok_line: str | None,
     report_url: str | None,
-    source_url: str | None,
     escape_html,
 ) -> str:
     """
-
-    Build a compact 'social card' HTML block that can be screenshotted
-    for posts on X/Twitter, LinkedIn, TikTok, etc.
-
-    - source_type: 'YouTube video', 'Article / web page', etc.
-    - overall_score_100: 0–100, or None if we didn't parse a score
-    - score_label: human-readable label (e.g. 'Mixed / uneven reasoning')
-    - fallacy_snippet: short text (1–2 items) summarizing fallacies/biases
-    - questions_snippet: short text summarizing questions to ask
-    - grok_line: optional one-line 'Grok enrichment' summary
-    - report_url: public URL for the full report (can be None for now)
-    - escape_html: function to escape arbitrary text for HTML
+    Build the reusable social card HTML block used both:
+    - at the top of the full report
+    - on the standalone /social page.
     """
 
-    # Title: keep it soft, not cocky
-    header_title = f"Reasoning snapshot for this {source_type.lower()}"
+    # --- Header line: MindPilot + snapshot title (optionally link to source/report) ---
+    brandline = "MindPilot · Your Co-Pilot for Critical Thinking"
 
-    # Snapshot label that can link to the original article/media
-    link_label = "Reasoning Snapshot for this Article / Media"
-    if source_url:
+    if report_url:
         header_title_html = (
-            f'<a href="{escape_html(source_url)}" '
-            'class="social-snapshot-link" target="_blank" '
-            'rel="noopener noreferrer">'
-            f'{escape_html(link_label)}</a>'
+            'Reasoning snapshot for this article / media · '
+            f'<a href="{escape_html(report_url)}" '
+            'class="social-source-link">View original source</a>'
         )
     else:
-        header_title_html = escape_html(link_label)
+        header_title_html = "Reasoning snapshot for this article / media"
 
+    header_title_html = header_title_html.strip()
+
+    # --- Score display + bar width ---
     if overall_score_100 is None:
-        score_display = "Reasoning snapshot"
-        bar_width = 100
+        score_display = "–"
+        bar_width = 60  # neutral mid-bar when we don't have a numeric score
         bar_caption = score_label or "Reasoning profile overview"
     else:
-        # Keep the pill itself VERY short
         score_display = f"{overall_score_100}/100"
-        bar_width = overall_score_100
-        # Caption just carries the qualitative label
+        # keep bar visually shorter; clamp between 10% and 90%
+        bar_width = max(10, min(overall_score_100, 90))
         bar_caption = score_label
-    # Break questions into up to two separate lines (we join with " · " upstream)
+
+    # --- Normalize raw snippet text ---
+    fallacy_text = (
+        fallacy_snippet.strip()
+        if fallacy_snippet
+        else "Key fallacy and bias signals highlighted in the full report."
+    )
+    questions_text = (
+        questions_snippet.strip()
+        if questions_snippet
+        else "See the full report for critical questions to stress-test this piece."
+    )
+
+    # --- Questions block: up to 2 bullets, ideally from different lines/categories ---
     question_lines: list[str] = []
     if questions_text:
-        parts = [p.strip() for p in questions_text.split("·") if p.strip()]
-        question_lines = parts[:2]
+        # Split on bullets or sentence boundaries after a '?'
+        raw_parts = re.split(r"[•·]|(?<=\?)\s+", questions_text)
+        cleaned = [p.strip(" -•·") for p in raw_parts if p.strip()]
+        # Take at most 2 distinct questions
+        for q in cleaned:
+            if q not in question_lines:
+                question_lines.append(q)
+            if len(question_lines) >= 2:
+                break
 
     if question_lines:
         questions_block_html = (
-            '<ul class="social-questions">'
-            + "".join(f"<li>{escape_html(q)}</li>" for q in question_lines)
+            '<ul class="social-questions-list">'
+            + "".join(
+                f"<li>{escape_html(q)}</li>"
+                for q in question_lines
+            )
             + "</ul>"
         )
     else:
-        questions_block_html = f'<p class="social-text">{escape_html(questions_text)}</p>'
-
-    fallacy_text = fallacy_snippet.strip() if fallacy_snippet else "Key fallacy and bias signals highlighted in the full report."
-    questions_text = questions_snippet.strip() if questions_snippet else "See the full report for critical questions to stress-test this piece."
+        questions_block_html = (
+            f'<p class="social-text">{escape_html(questions_text)}</p>'
+        )
 
     # --- Grok enrichment: collapse to a single punchy line ---
     grok_text_raw = (grok_line or "").strip()
     grok_display = ""
     if grok_text_raw:
-        # Walk lines until we find a real content line (skip the branding header)
-        for line in grok_text_raw.splitlines():
-            candidate = line.strip()
-            if not candidate:
-                continue
-            # Skip the banner-like heading such as "## MindPilot × Grok Live Context & Creative Debrief"
-            if re.search(r"mindpilot\s*×\s*grok", candidate, re.I):
-                continue
+        # Take first sentence-ish chunk
+        first_sentence = grok_text_raw.split(". ")[0].strip()
+        # Strip leading markdown noise
+        first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
+        if first_sentence and not first_sentence.endswith("."):
+            first_sentence += "."
+        grok_display = first_sentence
 
-            # Take just the first sentence-ish chunk from that line
-            first_sentence = candidate.split(". ")[0].strip()
-            first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
-            if first_sentence and not first_sentence.endswith("."):
-                first_sentence += "."
-            grok_display = first_sentence
-            break
-
-    # --- Footer link: shorter visible text, URL in the background ---
+    # --- Footer link: short visible text, full URL behind link ---
     if report_url:
         footer_left = (
             'Full Cognitive Flight Report → '
@@ -549,24 +551,24 @@ def build_social_card_html(
     else:
         footer_left = "Full Cognitive Flight Report available in the MindPilot app."
 
-    # --- Build a tiny fallacy table: Pattern | Severity (top 3–4) ---
+    # --- Tiny fallacy table: Pattern | Severity (top 3) ---
     fallacy_table_html = ""
     if fallacy_text:
         raw_items = [item.strip() for item in fallacy_text.split(";") if item.strip()]
-        rows = []
+        rows: list[tuple[str, str]] = []
         for item in raw_items[:3]:
             pattern = item
             severity = ""
             if "(" in item and item.endswith(")"):
                 base, _, tail = item.rpartition("(")
-                pattern = base.strip(" ,;")
+                pattern = base.strip(" ,")
                 severity = tail[:-1].strip()  # drop trailing ')'
             rows.append((pattern, severity))
 
         if rows:
             row_html = "\n".join(
                 f"<tr><td>{escape_html(pattern)}</td>"
-                f"<td class=\"severity-cell\">{escape_html(severity or '')}</td></tr>"
+                f'<td class="severity-cell">{escape_html(severity or "")}</td></tr>'
                 for pattern, severity in rows
             )
             fallacy_table_html = f"""
@@ -581,16 +583,17 @@ def build_social_card_html(
             """.rstrip()
 
     fallacy_block_html = (
-            fallacy_table_html
-            or f'<p class="social-text">{escape_html(fallacy_text)}</p>'
+        fallacy_table_html
+        or f'<p class="social-text">{escape_html(fallacy_text)}</p>'
     )
 
+    # --- Final card HTML ---
     return f"""
       <section class="card-sub social-card" id="mp-social-card">
         <div class="social-header">
           <div class="social-title-block">
-            <div class="social-brandline">MindPilot · Your Co-Pilot for Critical Thinking</div>
-                    <div class="social-title">{header_title_html}</div>
+            <div class="social-brandline">{escape_html(brandline)}</div>
+            <div class="social-title">{header_title_html}</div>
           </div>
           <div class="social-logo">
             <!-- Adjust path if needed for your deployed assets -->
@@ -611,10 +614,10 @@ def build_social_card_html(
             <div class="social-label">Fallacies &amp; bias signals</div>
             {fallacy_block_html}
           </div>
-            <div>
-                <div class="social-label">Questions to Ask Yourself</div>
-                {questions_block_html}
-            </div>
+          <div>
+            <div class="social-label">Questions to ask</div>
+            {questions_block_html}
+          </div>
         </div>
     """ + (
         f"""
@@ -630,6 +633,7 @@ def build_social_card_html(
         </div>
       </section>
     """
+
 
 def build_social_page_html(
     *,
@@ -1620,7 +1624,7 @@ def build_html_report(
 <head>
   <meta charset="UTF-8" />
   <title>MindPilot – Cognitive Flight Report</title>
-  <link rel="icon" href="/assets/mindpilot-symbol.png" type="image/png" />  
+  <link rel="icon" href="https://mind-pilot.ai/assets/mindpilot-symbol.png" type="image/png" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {{
