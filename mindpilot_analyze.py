@@ -545,13 +545,30 @@ def build_social_card_html(
     grok_text_raw = (grok_line or "").strip()
     grok_display = ""
     if grok_text_raw:
-        # Take first sentence-ish chunk
-        first_sentence = grok_text_raw.split(". ")[0].strip()
-        # Strip leading markdown noise
-        first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
-        if first_sentence and not first_sentence.endswith("."):
-            first_sentence += "."
-        grok_display = first_sentence
+        # Split into non-empty lines
+        lines = [ln.strip() for ln in grok_text_raw.splitlines() if ln.strip()]
+
+        if lines:
+            # Heuristic: drop a heading-like first line (often a title)
+            if len(lines) >= 2:
+                first = lines[0]
+                first_lower = first.lower()
+                if (
+                        first.startswith("#")
+                        or first_lower.startswith("grok enrichment")
+                        or (len(first) < 80 and "." not in first)
+                ):
+                    lines = lines[1:]
+
+            # Collapse remaining lines and take the first sentence-ish chunk
+            collapsed = " ".join(lines).strip()
+            if collapsed:
+                first_sentence = collapsed.split(". ")[0].strip()
+                # Strip leading markdown noise
+                first_sentence = re.sub(r"^[#*\s]+", "", first_sentence)
+                if first_sentence and not first_sentence.endswith("."):
+                    first_sentence += "."
+                grok_display = first_sentence
 
     # --- Footer link: short visible text, full URL behind link ---
     if report_url:
@@ -602,26 +619,27 @@ def build_social_card_html(
 
     # --- Final card HTML ---
     return f"""
-      <section class="card-sub social-card" id="mp-social-card">
+            <section class="card-sub social-card" id="mp-social-card">
         <div class="social-header">
           <div class="social-title-block">
             <div class="social-brandline">{escape_html(brandline)}</div>
             <div class="social-title">{header_title_html}</div>
           </div>
+
+          <div class="social-score-row">
+            <div class="social-score-number">{escape_html(score_display)}</div>
+            <div class="score-bar-track">
+              <div class="score-bar-fill" style="width: {bar_width}%;"></div>
+            </div>
+            <div class="score-bar-label">{escape_html(bar_caption)}</div>
+          </div>
+
           <div class="social-logo">
             <img
-               src="https://mind-pilot.ai/assets/mindpilot-symbol.png"
-               alt="MindPilot symbol"
+              src="https://mind-pilot.ai/assets/mindpilot-symbol.png"
+              alt="MindPilot symbol"
             />
           </div>
-        </div>
-
-        <div class="social-score-row">
-          <div class="social-score-number">{escape_html(score_display)}</div>
-          <div class="score-bar-track">
-            <div class="score-bar-fill" style="width: {bar_width}%;"></div>
-          </div>
-          <div class="score-bar-label">{escape_html(bar_caption)}</div>
         </div>
 
         <div class="social-grid">
@@ -746,15 +764,17 @@ def build_social_page_html(
     }}
     .social-header {{
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 0.9rem;
       margin-bottom: 0.65rem;
+      flex-wrap: wrap; /* lets things wrap nicely on narrow screens */
     }}
     .social-title-block {{
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
+      flex: 1 1 180px; /* title takes the flexible left side */
     }}
     .social-brandline {{
       font-size: 0.7rem;
@@ -776,6 +796,7 @@ def build_social_page_html(
       display: flex;
       align-items: center;
       gap: 0.6rem;
+      flex: 0 0 260px; /* lives as a center column on typical desktop width */
     }}
     .social-questions {{
       margin: 0;
