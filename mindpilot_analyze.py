@@ -456,6 +456,7 @@ def build_social_card_html(
     questions_snippet: str,
     grok_line: str | None,
     report_url: str | None,
+    source_url: str | None,
     escape_html,
 ) -> str:
     """
