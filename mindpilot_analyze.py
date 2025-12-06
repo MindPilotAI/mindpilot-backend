@@ -514,55 +514,23 @@ def build_social_card_html(
         else "See the full report for critical questions to stress-test this piece."
     )
 
-    # --- Questions block: up to 2 bullets, cleaned + de-duplicated ---
+    # --- Questions block: split the pre-digested snippet, de-duplicate ---
     question_lines: list[str] = []
     if questions_text:
-        # Split into raw lines first
-        raw_lines = [ln.strip() for ln in questions_text.splitlines() if ln.strip()]
+        # summarize_questions_for_social returns: "Q1 · Q2"
+        parts = [p.strip() for p in questions_text.split("·") if p.strip()]
 
-        # Drop heading-like lines (Markdown headings, etc.)
-        filtered_lines: list[str] = []
-        for ln in raw_lines:
-            if ln.lstrip().startswith("#"):
-                continue
-            filtered_lines.append(ln)
-
-        candidates: list[str] = []
         seen_norm: set[str] = set()
 
-        def _maybe_add(q: str) -> None:
-            q_clean = q.strip()
-            if not q_clean:
-                return
-            # Normalize for de-duplication: remove non-word chars, lowercase
-            norm = re.sub(r"\W+", "", q_clean).lower()
+        for q in parts:
+            # Normalize to avoid near-duplicates
+            norm = re.sub(r"\W+", "", q).lower()
             if not norm or norm in seen_norm:
-                return
-            seen_norm.add(norm)
-            candidates.append(q_clean)
-
-        # First pass: treat bullet/numbered lines as separate questions
-        for ln in filtered_lines:
-            # Strip leading bullets / numbering (e.g. "- ", "• ", "1. ", "1) ")
-            cleaned = re.sub(r"^[-*•\d\.\)\s]+", "", ln).strip()
-            if not cleaned:
                 continue
-            _maybe_add(cleaned)
-
-        # Fallback: if we still have < 2, split on question marks
-        if len(candidates) < 2 and filtered_lines:
-            merged = " ".join(filtered_lines)
-            parts = [p.strip() for p in re.split(r"\?\s+", merged) if p.strip()]
-            for p in parts:
-                q = p
-                if not q.endswith("?"):
-                    q = q + "?"
-                _maybe_add(q)
-                if len(candidates) >= 2:
-                    break
-
-        # Final: at most 2 distinct questions
-        question_lines = candidates[:2]
+            seen_norm.add(norm)
+            question_lines.append(q)
+            if len(question_lines) >= 2:
+                break
 
     if question_lines:
         questions_block_html = (
@@ -2088,7 +2056,52 @@ def build_html_report(
         height: 72px;
         display: block;
       }}
-
+      .social-brandline {{
+        font-size: 0.9rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #A0AEC0;
+      }}
+      .social-fallacy-table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.2rem;
+        font-size: 0.78rem;
+        color: #E2E8F0;
+      }}
+      .social-fallacy-table th,
+      .social-fallacy-table td {{
+        padding: 0.2rem 0.4rem;
+        vertical-align: top;
+      }}
+      .social-fallacy-table thead th {{
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #A0AEC0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.5);
+      }}
+      .social-fallacy-table tbody tr {{
+        border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      }}
+      .social-fallacy-table tbody tr:last-child {{
+        border-bottom: none;
+      }}
+      .social-fallacy-table td:first-child {{
+        width: 90%;      /* fill most of the left half */
+      }}
+      .social-fallacy-table td:last-child {{
+        white-space: nowrap;
+        text-align: right;
+      }}
+      .social-fallacy-table .severity-cell {{
+        text-align: right;
+        white-space: nowrap;
+        font-weight: 600;
+        color: #FBD38D; /* gentle highlight for High/Med/Low */
+      }}
       .social-score-row {{
         display: grid;
         grid-template-columns: auto 1fr;
@@ -2096,7 +2109,6 @@ def build_html_report(
         align-items: center;
         margin-bottom: 0.7rem;
       }}
-
       /* Short, compact pill */
       .social-score-number {{
         font-size: 0.9rem;
@@ -2108,31 +2120,26 @@ def build_html_report(
         text-align: center;
         min-width: 3.5rem;
       }}
-
       .score-bar-track {{
         height: 0.5rem;
         background: rgba(148, 163, 184, 0.45);
       }}
-
       .social-score-row .score-bar-label {{
         grid-column: 1 / -1;
         font-size: 0.78rem;
         color: #CBD5F5;
       }}
-
       .social-grid {{
         display: grid;
         grid-template-columns: minmax(0, 1fr);
         gap: 0.5rem 1rem;
         margin-bottom: 0.7rem;
       }}
-
       .social-text {{
         margin: 0;
         font-size: 0.82rem;
         line-height: 1.4;
       }}
-
       @media (min-width: 640px) {{
        .social-grid {{
          grid-template-columns: minmax(0, 1.0fr) minmax(0, 1fr);
