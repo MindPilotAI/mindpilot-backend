@@ -514,14 +514,43 @@ def build_social_card_html(
         else "See the full report for critical questions to stress-test this piece."
     )
 
-    # --- Questions block: up to 2 bullets, ideally from different lines/categories ---
+    # --- Questions block: up to 2 bullets, cleaned of headings/numbering ---
     question_lines: list[str] = []
     if questions_text:
-        # Split on bullets or sentence boundaries after a '?'
-        raw_parts = re.split(r"[•·]|(?<=\?)\s+", questions_text)
-        cleaned = [p.strip(" -•·") for p in raw_parts if p.strip()]
+        # Split into raw lines first
+        raw_lines = [ln.strip() for ln in questions_text.splitlines() if ln.strip()]
+
+        # Drop heading-like lines (Markdown headings, etc.)
+        filtered_lines: list[str] = []
+        for ln in raw_lines:
+            if ln.lstrip().startswith("#"):
+                continue
+            filtered_lines.append(ln)
+
+        # First pass: treat bullet/numbered lines as separate questions
+        candidates: list[str] = []
+        for ln in filtered_lines:
+            # Strip leading bullets / numbering (e.g. "- ", "• ", "1. ", "1) ")
+            cleaned = re.sub(r"^[-*•\d\.\)\s]+", "", ln).strip()
+            if not cleaned:
+                continue
+            candidates.append(cleaned)
+
+        # Fallback: if we still have < 2, split on question marks
+        if len(candidates) < 2 and filtered_lines:
+            merged = " ".join(filtered_lines)
+            parts = [p.strip() for p in re.split(r"\?\s+", merged) if p.strip()]
+            for p in parts:
+                q = p
+                if not q.endswith("?"):
+                    q = q + "?"
+                if q not in candidates:
+                    candidates.append(q)
+                if len(candidates) >= 2:
+                    break
+
         # Take at most 2 distinct questions
-        for q in cleaned:
+        for q in candidates:
             if q not in question_lines:
                 question_lines.append(q)
             if len(question_lines) >= 2:
@@ -864,48 +893,45 @@ def build_social_page_html(
       color: #E2E8F0;
     }}
     .social-fallacy-table {{
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 0.2rem;
-  font-size: 0.78rem;
-  color: #E2E8F0;
-}}
-.social-fallacy-table th,
-.social-fallacy-table td {{
-  padding: 0.2rem 0.4rem;
-  vertical-align: top;
-}}
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.2rem;
+        font-size: 0.78rem;
+        color: #E2E8F0;
+    }}
+    .social-fallacy-table th,
+    .social-fallacy-table td {{
+      padding: 0.2rem 0.4rem;
+      vertical-align: top;
+    }}
 
-.social-fallacy-table thead th {{
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: #A0AEC0;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.5);
-}}
+    .social-fallacy-table thead th {{
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #A0AEC0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.5);
+    }}
 
-.social-fallacy-table tbody tr {{
-  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-}}
+    .social-fallacy-table tbody tr {{
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    }}
 
-.social-fallacy-table tbody tr:last-child {{
-  border-bottom: none;
-}}
+    .social-fallacy-table tbody tr:last-child {{
+      border-bottom: none;
+    }}
 
-.social-fallacy-table td:first-child {{
-  width: 75%;
-}}
-
-.social-fallacy-table .severity-cell {{
-  text-align: right;
-  white-space: nowrap;
-  font-weight: 600;
-  color: #FBD38D; /* gentle attention */
-}}
-
-
-        .social-grok {{
+    .social-fallacy-table td:first-child {{
+      width: 80%;
+    }}
+    .social-fallacy-table .severity-cell {{
+      text-align: right;
+      white-space: nowrap;
+      font-weight: 600;
+      color: #FBD38D; /* gentle attention */
+    }}
+    .social-grok {{
       margin-top: 0.4rem;
       margin-bottom: 0.55rem;
       font-size: 0.8rem;
@@ -1390,10 +1416,22 @@ def build_html_report(
             candidate = line.strip()
             if not candidate:
                 continue
-            # Skip the banner heading like "## MindPilot × Grok Live Context & Creative Debrief"
-            if re.search(r"mindpilot\s*×\s*grok", candidate, re.I):
+
+            lower = candidate.lower()
+
+            # Skip banner / title-ish lines
+            if re.search(r"mindpilot\s*×\s*grok", lower):
                 continue
+            if lower.startswith("grok enrichment"):
+                continue
+            if "current context snapshot" in lower:
+                continue
+            # Very short, no-period line → likely a heading, skip
+            if len(candidate) < 80 and "." not in candidate:
+                continue
+
             grok_line = candidate
+            # Keep it short for the card
             if len(grok_line) > 160:
                 grok_line = grok_line[:157].rstrip() + "…"
             break
@@ -2084,11 +2122,10 @@ def build_html_report(
       }}
 
       @media (min-width: 640px) {{
-        .social-grid {{
-          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        }}
-      }}
-
+       .social-grid {{
+         grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+         }}
+       }}
     .social-label {{
       font-size: 0.72rem;
       text-transform: uppercase;
@@ -2120,7 +2157,7 @@ def build_html_report(
       font-weight: 500;
       color: #81E6D9;
     }}
-         .social-card {{
+    .social-card {{
        margin-top: 0.9rem;
        margin-bottom: 0.3rem;
        background: #0B1B33;
@@ -2159,7 +2196,7 @@ def build_html_report(
        font-weight: 700;
        white-space: nowrap;
      }}
-           .social-score-row .score-bar-track {{
+     .social-score-row .score-bar-track {{
         position: relative;
         height: 0.5rem;
         background: rgba(148, 163, 184, 0.45);
@@ -2167,7 +2204,6 @@ def build_html_report(
         overflow: hidden;
         max-width: 260px;  /* keep the bar to ~half the card width */
       }}
-
      .social-score-row .score-bar-label {{
        grid-column: 1 / -1;
        font-size: 0.78rem;
