@@ -514,7 +514,7 @@ def build_social_card_html(
         else "See the full report for critical questions to stress-test this piece."
     )
 
-    # --- Questions block: up to 2 bullets, cleaned of headings/numbering ---
+    # --- Questions block: up to 2 bullets, cleaned + de-duplicated ---
     question_lines: list[str] = []
     if questions_text:
         # Split into raw lines first
@@ -527,14 +527,27 @@ def build_social_card_html(
                 continue
             filtered_lines.append(ln)
 
-        # First pass: treat bullet/numbered lines as separate questions
         candidates: list[str] = []
+        seen_norm: set[str] = set()
+
+        def _maybe_add(q: str) -> None:
+            q_clean = q.strip()
+            if not q_clean:
+                return
+            # Normalize for de-duplication: remove non-word chars, lowercase
+            norm = re.sub(r"\W+", "", q_clean).lower()
+            if not norm or norm in seen_norm:
+                return
+            seen_norm.add(norm)
+            candidates.append(q_clean)
+
+        # First pass: treat bullet/numbered lines as separate questions
         for ln in filtered_lines:
             # Strip leading bullets / numbering (e.g. "- ", "• ", "1. ", "1) ")
             cleaned = re.sub(r"^[-*•\d\.\)\s]+", "", ln).strip()
             if not cleaned:
                 continue
-            candidates.append(cleaned)
+            _maybe_add(cleaned)
 
         # Fallback: if we still have < 2, split on question marks
         if len(candidates) < 2 and filtered_lines:
@@ -544,17 +557,12 @@ def build_social_card_html(
                 q = p
                 if not q.endswith("?"):
                     q = q + "?"
-                if q not in candidates:
-                    candidates.append(q)
+                _maybe_add(q)
                 if len(candidates) >= 2:
                     break
 
-        # Take at most 2 distinct questions
-        for q in candidates:
-            if q not in question_lines:
-                question_lines.append(q)
-            if len(question_lines) >= 2:
-                break
+        # Final: at most 2 distinct questions
+        question_lines = candidates[:2]
 
     if question_lines:
         questions_block_html = (
@@ -806,7 +814,8 @@ def build_social_page_html(
       flex: 1 1 180px; /* title takes the flexible left side */
     }}
     .social-brandline {{
-      font-size: 0.7rem;
+      font-size: 0.85rem;
+      font-weight: 600;
       letter-spacing: 0.14em;
       text-transform: uppercase;
       color: #A0AEC0;
@@ -921,9 +930,12 @@ def build_social_page_html(
     .social-fallacy-table tbody tr:last-child {{
       border-bottom: none;
     }}
-
     .social-fallacy-table td:first-child {{
-      width: 80%;
+    width: 90%;      /* fill more of its half */
+    }}
+    .social-fallacy-table td:last-child {{
+      white-space: nowrap;
+      text-align: right;
     }}
     .social-fallacy-table .severity-cell {{
       text-align: right;
@@ -2123,8 +2135,7 @@ def build_html_report(
 
       @media (min-width: 640px) {{
        .social-grid {{
-         grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-         }}
+         grid-template-columns: minmax(0, 1.0fr) minmax(0, 1fr);
        }}
     .social-label {{
       font-size: 0.72rem;
