@@ -1,16 +1,12 @@
 # mindpilot_api.py
-
 import logging
 import re
 import html as html_lib  # NEW: for safe escaping in helper HTML
 
 from datetime import datetime
-
 from fastapi import FastAPI, Form, UploadFile, File
-
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
-
 from mindpilot_engine import (
     run_full_analysis_from_youtube,
     run_full_analysis_from_text,
@@ -24,7 +20,6 @@ from mindpilot_engine import (
 
 # Simple in-memory store: report_id -> HTML
 REPORT_STORE: dict[str, str] = {}
-
 
 def generate_report_id(source_label: str = "", mode: str = "", depth: str = "full") -> str:
     """
@@ -41,7 +36,6 @@ def generate_report_id(source_label: str = "", mode: str = "", depth: str = "ful
         base = "report"
 
     return f"{ts}-{base}"
-
 
 def extract_report_id_from_html(html: str) -> str | None:
     """
@@ -257,16 +251,15 @@ logging.basicConfig(
 
 app = FastAPI(title="MindPilot API")
 
-# ---------------------------------------------------------
-# CORS (works with Netlify; later restrict origins)
-# ---------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # TODO: later restrict → ["https://mind-pilot.ai"]
+    allow_origins=["*"],  # later: ["https://mind-pilot.ai", "https://dev.mind-pilot.ai"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-MindPilot-Report-ID"],  # 👈 critical line
 )
+
 
 # ---------------------------------------------------------
 # Health Check
@@ -274,7 +267,6 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
 
 # ---------------------------------------------------------
 # Main Analysis Endpoint
@@ -313,7 +305,6 @@ async def analyze(
     # We'll use this to generate a stable-ish report_id for storage/routes
     source_label_for_id = ""
     html_report: str | None = None
-
 
     try:
         # 1) If a file is present, treat this as a document analysis
@@ -430,7 +421,6 @@ async def analyze(
         response.headers["X-MindPilot-Report-ID"] = report_id
         return response
 
-
     except Exception as e:
         logging.error("Error in /analyze endpoint", exc_info=True)
         # During development, return the actual error text so we can see what failed
@@ -439,9 +429,7 @@ async def analyze(
             status_code=500,
         )
 
-
 from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
-
 
 @app.get("/test_openai")
 async def test_openai():
