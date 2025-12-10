@@ -3,8 +3,9 @@ import logging
 import re
 import html as html_lib  # NEW: for safe escaping in helper HTML
 import os
-import psycopg2
-from psycopg2.extras import DictCursor
+import pg8000
+from urllib.parse import urlparse
+
 
 from datetime import datetime
 from fastapi import FastAPI, Form, UploadFile, File
@@ -29,13 +30,26 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
     """
-    Simple helper to open a new DB connection.
-    psycopg2 manages pooling internally at the TCP level; for our current
-    scale, a per-request connection is acceptable.
+    Open a new DB connection using pg8000 and the DATABASE_URL from Railway.
     """
     if not DATABASE_URL:
         return None
-    return psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+
+    url = urlparse(DATABASE_URL)
+    # Example: postgresql://user:pass@host:5432/dbname
+    username = url.username
+    password = url.password
+    host = url.hostname
+    port = url.port or 5432
+    database = url.path.lstrip("/") or None
+
+    return pg8000.connect(
+        user=username,
+        password=password,
+        host=host,
+        port=port,
+        database=database,
+    )
 
 
 def save_report_to_db(
@@ -53,40 +67,44 @@ def save_report_to_db(
     """
     conn = get_db_connection()
     if conn is None:
-        # No DB configured (e.g. local dev) – just skip
         return
 
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO reports (
-                        id, mode, depth, source_url, source_label,
-                        cfr_html, social_html
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE
-                    SET
-                        mode = EXCLUDED.mode,
-                        depth = EXCLUDED.depth,
-                        source_url = EXCLUDED.source_url,
-                        source_label = EXCLUDED.source_label,
-                        cfr_html = EXCLUDED.cfr_html,
-                        social_html = EXCLUDED.social_html
-                    """,
-                    (
-                        report_id,
-                        mode,
-                        depth,
-                        source_url,
-                        source_label,
-                        cfr_html,
-                        social_html,
-                    ),
-                )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reports (
+                id, mode, depth, source_url, source_label,
+                cfr_html, social_html
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+            SET
+                mode = EXCLUDED.mode,
+                depth = EXCLUDED.depth,
+                source_url = EXCLUDED.source_url,
+                source_label = EXCLUDED.source_label,
+                cfr_html = EXCLUDED.cfr_html,
+                social_html = EXCLUDED.social_html
+            """,
+            (
+                report_id,
+                mode,
+                depth,
+                source_url,
+                source_label,
+                cfr_html,
+                social_html,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        logging.exception("Failed to save report to Postgres")
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def load_report_from_db(report_id: str) -> tuple[str | None, str | None]:
@@ -99,22 +117,29 @@ def load_report_from_db(report_id: str) -> tuple[str | None, str | None]:
         return None, None
 
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT cfr_html, social_html
-                    FROM reports
-                    WHERE id = %s
-                    """,
-                    (report_id,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return None, None
-                return row["cfr_html"], row["social_html"]
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT cfr_html, social_html
+            FROM reports
+            WHERE id = %s
+            """,
+            (report_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        # pg8000 returns a tuple, not a dict
+        return row[0], row[1]
+    except Exception:
+        logging.exception("Failed to load report from Postgres")
+        return None, None
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def generate_report_id(source_label: str = "", mode: str = "", depth: str = "full") -> str:
     """
