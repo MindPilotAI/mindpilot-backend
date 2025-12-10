@@ -2,11 +2,15 @@ import os
 import re
 import textwrap
 
+class TranscriptUnavailableError(RuntimeError):
+    """Raised when YouTube transcript is disabled or not found."""
+    pass
+
 from urllib.parse import urlparse, parse_qs
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-from mindpilot_llm_client import run_mindpilot_analysis, classify_content
+# from mindpilot_llm_client import run_mindpilot_analysis, classify_content
 
 
 # ---------- CONFIG ----------
@@ -51,19 +55,18 @@ def fetch_transcript_text(video_id: str) -> str:
     api = YouTubeTranscriptApi()
 
     try:
-        fetched = api.fetch(video_id, languages=['en'])
+        fetched = api.fetch(video_id, languages=["en"])
         raw_chunks = fetched.to_raw_data()
     except TranscriptsDisabled:
-        raise RuntimeError("Transcripts are disabled for this video.")
+        raise TranscriptUnavailableError("Transcripts are disabled for this video.")
     except NoTranscriptFound:
-        raise RuntimeError("No transcript found for this video.")
+        raise TranscriptUnavailableError("No transcript found for this video.")
     except Exception as e:
         raise RuntimeError(f"Unexpected error fetching transcript: {e}")
 
     full_text = " ".join(chunk.get("text", "") for chunk in raw_chunks)
     full_text = re.sub(r"\s+", " ", full_text).strip()
     return full_text
-
 
 def save_text_to_file(text: str, output_path: str) -> None:
     with open(output_path, "w", encoding="utf-8") as f:
@@ -514,37 +517,48 @@ def build_social_card_html(
         else "See the full report for critical questions to stress-test this piece."
     )
 
-    # --- Questions block: split the pre-digested snippet, de-duplicate ---
+    # --- Questions block: normalize and de-duplicate ---
     question_lines: list[str] = []
+
     if questions_text:
-        # summarize_questions_for_social returns: "Q1 · Q2"
-        parts = [p.strip() for p in questions_text.split("·") if p.strip()]
+        # Split on line breaks
+        raw_parts = [ln.strip() for ln in questions_text.splitlines() if ln.strip()]
 
-        seen_norm: set[str] = set()
+        normalized = []
+        seen = set()
 
-        for q in parts:
-            # Normalize to avoid near-duplicates
-            norm = re.sub(r"\W+", "", q).lower()
-            if not norm or norm in seen_norm:
+        for part in raw_parts:
+            # Remove markdown bullets, numbering, headings
+            cleaned = re.sub(r"^[#>\s*•\d().-]+", "", part).strip()
+
+            # Must end in a "?" to count as a real question
+            if "?" not in cleaned:
                 continue
-            seen_norm.add(norm)
-            question_lines.append(q)
-            if len(question_lines) >= 2:
-                break
+            if not cleaned.endswith("?"):
+                cleaned += "?"
 
+            # Normalize for dedup
+            key = re.sub(r"\W+", "", cleaned).lower()
+
+            if key not in seen:
+                seen.add(key)
+                normalized.append(cleaned)
+
+        # Take at most 2
+        question_lines = normalized[:2]
+    # --- Render questions block HTML ---
     if question_lines:
         questions_block_html = (
-            '<ul class="social-questions-list">'
-            + "".join(
-                f"<li>{escape_html(q)}</li>"
+            '<ul class="social-questions social-questions-list">\n' +
+            "\n".join(
+                f"  <li>{escape_html(q)}</li>"
                 for q in question_lines
-            )
-            + "</ul>"
+            ) +
+            "\n</ul>"
         )
     else:
-        questions_block_html = (
-            f'<p class="social-text">{escape_html(questions_text)}</p>'
-        )
+        # Fallback: show the raw snippet as a paragraph
+        questions_block_html = f'<p class="social-text">{escape_html(questions_text)}</p>'
 
     # --- Grok enrichment: collapse to a single punchy line ---
     grok_text_raw = (grok_line or "").strip()
@@ -670,6 +684,36 @@ def build_social_card_html(
           <span class="social-watermark">MindPilot · Cognitive Flight Report</span>
         </div>
       </section>
+      
+        .social-fallacy-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      margin-top: 0.4rem;
+    }}
+    
+    .social-fallacy-table th,
+    .social-fallacy-table td {{
+      padding: 0.2rem 0.4rem;
+    }}
+    
+    .social-fallacy-table th {{
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #A0AEC0;
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+    }}
+    
+    .social-fallacy-table td:first-child {{
+      width: 85%;     /* fills most of the left half */
+    }}
+    
+    .social-fallacy-table td:last-child {{
+      white-space: nowrap;
+      text-align: right;
+    }}
+
     """
 
 
@@ -756,6 +800,17 @@ def build_social_page_html(
     }}
     .brand-top strong {{
       color: #E2E8F0;
+    }}
+    .instruction-block {{
+      border-left: 4px solid var(--sky-blue);
+      background: rgba(79, 209, 197, 0.04); /* very light tint */
+      padding: 12px 16px;
+      margin: 16px 0;
+      border-radius: 8px;
+    }}
+    .instruction-block h3,
+    .instruction-block h4 {{
+      margin-top: 0;
     }}
 
     /* Card styling (matches your social card, but tuned for standalone use) */
@@ -2269,7 +2324,7 @@ def build_html_report(
     <div class="page">
     <header>
       <div class="logo-title">MindPilot Cognitive Flight Report</div>
-      <div class="tagline">Your critical thinking copilot’s readback of this content.</div>
+      <div class="tagline">Your critical thinking Co-Pilot’s readback of this content.</div>
       <div class="header-meta">
         <span>{escape_html(source_type)}</span>
         <span>· {total_chunks} section(s) analyzed</span>
@@ -2297,7 +2352,7 @@ def build_html_report(
     if has_any_global:
         html += f"""
     <section class="card">
-      <div class="card-title">Your Critical Thinking CoPilot Report</div>
+      <div class="card-title">Your Critical Thinking Report</div>
       {social_card_html}
       """
 
@@ -2412,12 +2467,12 @@ def build_html_report(
     html += """
 
         <section class="card-sub">
-
+          <div class="instruction-block">
           <div class="card-title">How to read this report</div>
 
           <div class="card-body">
 
-            MindPilot is your critical thinking copilot. This analysis highlights patterns in
+            MindPilot is your critical thinking co-pilot. This analysis highlights patterns in
 
             reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
 
@@ -2438,7 +2493,7 @@ def build_html_report(
             quick mode.  In full mode, it also runs section-level diagnostics, so scores may shift
             
             slightly within a small tolerance as the system "thinks harder" about the reasoning.
-
+          </div>
           </div>
 
         </section>
@@ -2782,5 +2837,5 @@ def build_html_report(
 # if __name__ == "__main__":
 #     main()
 
-    main()
+#    main()
 

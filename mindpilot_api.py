@@ -4,6 +4,14 @@ import re
 import html as html_lib  # NEW: for safe escaping in helper HTML
 import os
 import pg8000
+import os
+import psycopg2
+from psycopg2.extras import DictCursor
+
+from fastapi.responses import HTMLResponse, PlainTextResponse
+# (add JSONResponse later if you want; for now we’ll still send plain text)
+
+
 from urllib.parse import urlparse
 
 
@@ -20,13 +28,61 @@ from mindpilot_engine import (
     run_quick_analysis_from_article,
     run_full_analysis_from_document,   # 🔹 NEW-ish
     run_quick_analysis_from_document,  # 🔹 NEW-ish
+    ContentBlockedError,
 )
+
+from mindpilot_analyze import TranscriptUnavailableError
 
 # Simple in-memory store: report_id -> HTML
 REPORT_STORE: dict[str, str] = {}
 # Database connection string injected by Railway
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+def get_db_connection():
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        return None
+    return psycopg2.connect(db_url, cursor_factory=DictCursor)
+
+
+def log_blockage_to_db(
+    *,
+    mode: str,
+    source_url: str | None,
+    source_label: str | None,
+    error_category: str,
+    error_detail: str,
+    http_status: int | None = None,
+    user_id: str | None = None,
+):
+    """
+    Best-effort logging of blocked / failed fetches.
+    Fails silently if DATABASE_URL is not set or the insert fails.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO source_blockages
+                    (mode, source_url, source_label, error_category, error_detail, http_status, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        mode,
+                        source_url,
+                        source_label,
+                        error_category,
+                        error_detail[:2000],
+                        http_status,
+                        user_id,
+                    ),
+                )
+    except Exception:
+        logging.exception("Failed to log blockage to Postgres")
 
 def get_db_connection():
     """
@@ -380,7 +436,6 @@ app.add_middleware(
     expose_headers=["X-MindPilot-Report-ID"],  # 👈 critical line
 )
 
-
 # ---------------------------------------------------------
 # Health Check
 # ---------------------------------------------------------
@@ -397,9 +452,10 @@ async def analyze(
     input_value: str = Form(""),     # allow empty when using file
     depth: str = Form("full"),       # "quick" or "full"
     file: UploadFile | None = File(None),
-    include_marketing_cta: str = Form("0"),  # NEW: dev_index.html sets this to "1"
+    include_marketing_cta: str = Form("0"),
+    article_title: str = Form(""),
+    article_url: str = Form(""),
 ):
-
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
@@ -411,10 +467,12 @@ async def analyze(
     """
     logging.info(f"[MindPilot] /analyze received mode={mode}, depth={depth}")
 
+    # Normalise depth
     depth = (depth or "full").lower().strip()
     if depth not in ("quick", "full"):
         depth = "full"
 
+    # Dev console passes include_marketing_cta=1
     include_marketing_cta_flag = str(include_marketing_cta or "0").lower() in (
         "1",
         "true",
@@ -422,15 +480,23 @@ async def analyze(
         "on",
     )
 
-    # We'll use this to generate a stable-ish report_id for storage/routes
-    source_label_for_id = ""
+    # Normalise optional article metadata
+    article_title = (article_title or "").strip()
+    article_url = (article_url or "").strip()
+    if not article_url:
+        article_url = None
+
+    # For report_id slug + DB source_label
+    source_label_for_id: str = ""
     html_report: str | None = None
 
     try:
-        # 1) If a file is present, treat this as a document analysis
+        # -------------------------------------------------
+        # 1) File upload → document mode
+        # -------------------------------------------------
         if file is not None and file.filename:
             filename = file.filename
-            source_label_for_id = filename  # use the filename in the slug
+            source_label_for_id = filename
 
             logging.info(
                 f"[MindPilot] Running {depth} document analysis for upload: {filename}"
@@ -442,7 +508,7 @@ async def analyze(
                 html_report = run_quick_analysis_from_document(
                     file_bytes=raw_bytes,
                     filename=filename,
-                    include_grok=False,  # keep quick cheap for now
+                    include_grok=False,
                 )
             else:
                 html_report = run_full_analysis_from_document(
@@ -450,54 +516,107 @@ async def analyze(
                     filename=filename,
                 )
 
-        # 2) Otherwise, fall back to the existing mode-based logic
+            source_url_for_db = None
+            source_label_for_db = filename
+
+        # -------------------------------------------------
+        # 2) YouTube mode
+        # -------------------------------------------------
         elif mode.lower() == "youtube":
             youtube_url = input_value.strip()
-            source_label_for_id = youtube_url  # use the URL in the slug
+            source_label_for_id = youtube_url
 
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
 
             if depth == "quick":
                 html_report = run_quick_analysis_from_youtube(
                     youtube_url,
-                    include_grok=False,  # keep quick = cheap; can revisit later
+                    include_grok=False,
                 )
             else:
                 html_report = run_full_analysis_from_youtube(youtube_url)
 
-        elif mode.lower() == "text":
-            source_label_for_id = "Pasted text"
+            source_url_for_db = youtube_url
+            source_label_for_db = youtube_url
 
-            logging.info(f"[MindPilot] Running {depth} TEXT analysis (pasted).")
+        # -------------------------------------------------
+        # 3) Plain text (pasted) mode
+        # -------------------------------------------------
+        elif mode.lower() == "text":
+            # Build a human-friendly label for pasted text so you
+            # can remember what this report was about later.
+            if article_title:
+                # If the user explicitly gave a title, use it.
+                source_label_for_id = article_title
+            else:
+                # Otherwise, derive a short label from the first line of text.
+                snippet = (input_value or "").strip().splitlines()[0] if input_value else ""
+                snippet = snippet.strip()
+                if snippet:
+                    if len(snippet) > 80:
+                        snippet = snippet[:77] + "…"
+                    source_label_for_id = f"Text: {snippet}"
+                else:
+                    source_label_for_id = "Pasted text"
+
+            logging.info(
+                f"[MindPilot] Running {depth} TEXT analysis "
+                f"(label={source_label_for_id!r})."
+            )
 
             if depth == "quick":
                 html_report = run_quick_analysis_from_text(
                     raw_text=input_value,
-                    source_label="Pasted text",
+                    source_label=source_label_for_id,
                     include_grok=False,
                 )
             else:
                 html_report = run_full_analysis_from_text(
                     raw_text=input_value,
-                    source_label="Pasted text",
+                    source_label=source_label_for_id,
                 )
 
-        elif mode.lower() == "article":
-            article_url = input_value.strip()
-            source_label_for_id = article_url  # use the URL
+            # For DB and Source card: optional article_url + derived label
+            source_url_for_db = article_url
+            source_label_for_db = source_label_for_id
 
-            logging.info(f"[MindPilot] Running {depth} article analysis: {article_url}")
+
+        # -------------------------------------------------
+        # 4) Article URL mode
+        # -------------------------------------------------
+        elif mode.lower() == "article":
+            # Frontend may supply article_url + article_title explicitly;
+            # if not, fall back to input_value as the URL.
+            url_from_input = input_value.strip()
+            effective_url = article_url or url_from_input or None
+            article_url = effective_url
+
+            source_label_for_id = article_title or (effective_url or "Article")
+
+            logging.info(
+                f"[MindPilot] Running {depth} ARTICLE analysis: {effective_url}"
+            )
+
+            if not effective_url:
+                return PlainTextResponse(
+                    "No article URL was provided.", status_code=400
+                )
 
             if depth == "quick":
                 html_report = run_quick_analysis_from_article(
-                    article_url,
+                    effective_url,
                     include_grok=False,
                 )
             else:
-                html_report = run_full_analysis_from_article(article_url)
+                html_report = run_full_analysis_from_article(effective_url)
 
+            source_url_for_db = effective_url
+            source_label_for_db = source_label_for_id
+
+        # -------------------------------------------------
+        # 5) Unsupported mode
+        # -------------------------------------------------
         else:
-            # Unsupported mode
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
 
         # ---------- Store the report (DB + in-memory) and return HTML ----------
@@ -515,16 +634,11 @@ async def analyze(
         # Build optional social snapshot + marketing CTAs
         social_html: str | None = None
         try:
-            # For the dev console (include_marketing_cta_flag = True), we:
-            #  - build a standalone social snapshot page
-            #  - keep the social card at the top of the CFR
-            #  - remove the "Copy-Ready Social Snippet" collapsible section
-            #  - insert marketing CTAs (top + bottom)
             if include_marketing_cta_flag:
                 # Use the original CFR HTML (with social card + snippet) to build the snapshot
                 social_html = build_social_share_page(html_report, report_id)
 
-            # In all cases, strip the copy-ready snippet block from the CFR itself
+            # Strip the copy-ready snippet block from the CFR itself
             html_report = strip_copy_ready_snippet_section(html_report)
 
             # Only dev_index (include_marketing_cta_flag) gets embedded CTAs
@@ -543,17 +657,14 @@ async def analyze(
         try:
             save_report_to_db(
                 report_id=report_id,
-                mode=mode,
+                mode=mode.lower(),
                 depth=depth,
-                source_url=locals().get("youtube_url", None)
-                if mode.lower() == "youtube"
-                else locals().get("article_url", None),
-                source_label=source_label_for_id or None,
+                source_url=source_url_for_db,
+                source_label=source_label_for_db,
                 cfr_html=html_report,
                 social_html=social_html,
             )
         except Exception:
-            # Don't kill the request if DB write fails; just log it.
             logging.exception("Failed to save report to Postgres")
 
         # Return CFR HTML to caller and include report_id header for dev_index.html
@@ -562,14 +673,156 @@ async def analyze(
         return response
 
 
+    except ContentBlockedError as e:
+
+        # Article / web URL blocked by site
+
+        logging.warning("ContentBlockedError in /analyze: %s", e, exc_info=True)
+
+        # Figure out likely source_url for logging
+
+        if mode.lower() == "article":
+
+            source_url_for_log = article_url or input_value
+
+        elif mode.lower() == "youtube":
+
+            source_url_for_log = input_value
+
+        else:
+
+            source_url_for_log = None
+
+        log_blockage_to_db(
+
+            mode=mode.lower(),
+
+            source_url=source_url_for_log,
+
+            source_label=source_label_for_id or None,
+
+            error_category="http_blocked",
+
+            error_detail=str(e),
+
+            http_status=getattr(e, "status_code", None),
+
+            user_id=None,  # later when you have accounts
+
+        )
+
+        # User-facing message (plan B for blocked articles)
+
+        msg = (
+
+            "MindPilot couldn’t fetch that article automatically.\n\n"
+
+            "This usually means the site doesn’t allow automated readers or requires you to be logged in.\n\n"
+
+            "Plan B:\n"
+
+            "  1. Open the article in your browser.\n"
+
+            "  2. Copy the text you can see OR use 'Print to PDF' and upload the file.\n"
+
+            "  3. Optionally paste the original article URL back into MindPilot so it’s saved in the header."
+
+        )
+
+        return PlainTextResponse(msg, status_code=422)
+
+
+    except TranscriptUnavailableError as e:
+
+        # YouTube transcript not available
+
+        logging.warning("TranscriptUnavailableError in /analyze: %s", e, exc_info=True)
+
+        log_blockage_to_db(
+
+            mode="youtube",
+
+            source_url=input_value,
+
+            source_label=source_label_for_id or None,
+
+            error_category="transcript_unavailable",
+
+            error_detail=str(e),
+
+            http_status=None,
+
+            user_id=None,
+
+        )
+
+        msg = (
+
+            "MindPilot couldn’t access the YouTube transcript automatically.\n\n"
+
+            f"{e}\n\n"
+
+            "Plan B:\n"
+
+            "  1. On YouTube, click the three dots under the video and choose 'Show transcript'.\n"
+
+            "  2. Copy the transcript text.\n"
+
+            "  3. Paste it into MindPilot as plain text (we’ll still keep the original video URL as the source)."
+
+        )
+
+        return PlainTextResponse(msg, status_code=422)
+
 
     except Exception as e:
+
+        # Generic catch-all
+
         logging.error("Error in /analyze endpoint", exc_info=True)
-        # During development, return the actual error text so we can see what failed
-        return PlainTextResponse(
-            f"MindPilot backend ERROR:\n{str(e)}",
-            status_code=500,
+
+        # Log generic failures as well, so you can see patterns later
+
+        source_url_for_log = None
+
+        if mode.lower() == "youtube":
+
+            source_url_for_log = input_value
+
+        elif mode.lower() == "article":
+
+            source_url_for_log = article_url or input_value
+
+        log_blockage_to_db(
+
+            mode=mode.lower(),
+
+            source_url=source_url_for_log,
+
+            source_label=source_label_for_id or None,
+
+            error_category="other",
+
+            error_detail=str(e),
+
+            http_status=None,
+
+            user_id=None,
+
         )
+
+        return PlainTextResponse(
+
+            "MindPilot backend ERROR:\n"
+
+            + str(e)
+
+            + "\n\nIf this keeps happening, try copying the text or saving to PDF and uploading it.",
+
+            status_code=500,
+
+        )
+
 
 from mindpilot_llm_client import run_mindpilot_analysis  # add near top with other imports
 

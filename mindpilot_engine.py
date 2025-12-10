@@ -6,6 +6,21 @@ import logging
 
 import httpx
 import io
+from mindpilot_analyze import (
+    fetch_transcript_text,
+    # ... other things ...
+    TranscriptUnavailableError,
+)
+
+class ContentBlockedError(RuntimeError):
+    """
+    Raised when an HTTP fetch is clearly blocked by the remote site
+    (e.g., 401/403/429 or 5xx). Carries the URL + status code for logging.
+    """
+    def __init__(self, message: str, source_url: str | None = None, status_code: int | None = None):
+        super().__init__(message)
+        self.source_url = source_url
+        self.status_code = status_code
 
 from datetime import datetime
 from urllib.parse import urlparse
@@ -200,13 +215,20 @@ def run_full_analysis_from_youtube(youtube_url: str) -> str:
 
     try:
         transcript_text = fetch_transcript_text(video_id)
+    except TranscriptUnavailableError as e:
+        # Let /analyze see the specific "no transcript" condition
+        logging.warning(
+            "[MindPilot] Transcript unavailable for video_id=%s: %s",
+            video_id,
+            e,
+        )
+        raise
     except Exception as e:
         logging.exception(
             "[MindPilot] fetch_transcript_text error for video_id=%s", video_id
         )
         raise RuntimeError(
-            "I couldn't fetch a transcript for that video. "
-            "It may not have an accessible transcript or YouTube may be blocking automated access. "
+            "I couldn't fetch a transcript for that video due to a technical error. "
             "If captions are visible to you, copy the transcript text and paste it into MindPilot."
         ) from e
 
@@ -233,6 +255,7 @@ def run_full_analysis_from_text(raw_text: str, source_label: str = "Pasted text"
         transcript_text=transcript_text,
         source_label=source_label,
     )
+
 def fetch_article_text(url: str) -> str:
     """
     Fetch a web page and extract main text content in a naive but useful way.
@@ -240,14 +263,49 @@ def fetch_article_text(url: str) -> str:
       - GET the page with httpx
       - Parse HTML with BeautifulSoup
       - Collect reasonably-long <p> blocks
+
+    If the site clearly blocks automated access (401/403/429 or 5xx),
+    raise ContentBlockedError so the API can give a friendly fallback message.
     """
     try:
-        resp = httpx.get(url, timeout=15.0)
-        resp.raise_for_status()
+        resp = httpx.get(
+            url,
+            timeout=15.0,
+            follow_redirects=True,
+            headers={
+                # Normal, non-sneaky browser-ish UA; this is "HTTP hygiene", not bypassing paywalls.
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0 Safari/537.36"
+                )
+            },
+        )
     except Exception as e:
-        raise RuntimeError(f"Error fetching article URL: {e}")
+        # Network-level issues (DNS, timeout, etc.)
+        raise RuntimeError(f"Network error fetching article URL: {e}")
+
+    status = resp.status_code
+
+    # Respect sites that clearly don't want automated readers
+    if status in (401, 403, 429) or status >= 500:
+        raise ContentBlockedError(
+            f"Blocked fetching article URL (HTTP {status}). "
+            "Some sites don't allow automated readers or require you to be logged in. "
+            "If you can read it in your browser, copy the text or save as PDF and upload it to MindPilot.",
+            source_url=url,
+            status_code=status,
+        )
+
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # Other non-2xx cases that aren't explicit "blocked" patterns
+        raise RuntimeError(f"Error fetching article URL (HTTP {status}): {e}") from e
 
     soup = BeautifulSoup(resp.text, "html.parser")
+
+    # ... keep your existing <p> extraction logic below ...
 
     paragraphs: list[str] = []
     for p in soup.find_all("p"):
