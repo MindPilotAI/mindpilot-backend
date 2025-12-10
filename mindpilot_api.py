@@ -512,13 +512,35 @@ async def analyze(
             depth=depth,
         )
 
+        # Build optional social snapshot + marketing CTAs
+        social_html: str | None = None
+        try:
+            # For the dev console (include_marketing_cta_flag = True), we:
+            #  - build a standalone social snapshot page
+            #  - keep the social card at the top of the CFR
+            #  - remove the "Copy-Ready Social Snippet" collapsible section
+            #  - insert marketing CTAs (top + bottom)
+            if include_marketing_cta_flag:
+                # Use the original CFR HTML (with social card + snippet) to build the snapshot
+                social_html = build_social_share_page(html_report, report_id)
+
+            # In all cases, strip the copy-ready snippet block from the CFR itself
+            html_report = strip_copy_ready_snippet_section(html_report)
+
+            # Only dev_index (include_marketing_cta_flag) gets embedded CTAs
+            if include_marketing_cta_flag:
+                html_report = insert_marketing_cta(html_report, report_id)
+
+        except Exception:
+            logging.exception("Failed to build social/CTA HTML")
+
         # In-memory (legacy, still used as a quick cache)
         REPORT_STORE[report_id] = html_report
+        if social_html:
+            REPORT_STORE[f"{report_id}-social"] = social_html
 
         # Persist to Postgres (if configured)
         try:
-            # You'll already have variables like `source_url` / `source_label_for_id`
-            # in this function; if not, you can pass None for those fields.
             save_report_to_db(
                 report_id=report_id,
                 mode=mode,
@@ -528,7 +550,7 @@ async def analyze(
                 else locals().get("article_url", None),
                 source_label=source_label_for_id or None,
                 cfr_html=html_report,
-                social_html=None,  # for now; later you can store your /social page HTML here
+                social_html=social_html,
             )
         except Exception:
             # Don't kill the request if DB write fails; just log it.
@@ -538,6 +560,7 @@ async def analyze(
         response = HTMLResponse(content=html_report, status_code=200)
         response.headers["X-MindPilot-Report-ID"] = report_id
         return response
+
 
 
     except Exception as e:
