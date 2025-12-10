@@ -2,6 +2,9 @@
 import logging
 import re
 import html as html_lib  # NEW: for safe escaping in helper HTML
+import os
+import psycopg2
+from psycopg2.extras import DictCursor
 
 from datetime import datetime
 from fastapi import FastAPI, Form, UploadFile, File
@@ -20,6 +23,98 @@ from mindpilot_engine import (
 
 # Simple in-memory store: report_id -> HTML
 REPORT_STORE: dict[str, str] = {}
+# Database connection string injected by Railway
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+def get_db_connection():
+    """
+    Simple helper to open a new DB connection.
+    psycopg2 manages pooling internally at the TCP level; for our current
+    scale, a per-request connection is acceptable.
+    """
+    if not DATABASE_URL:
+        return None
+    return psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+
+
+def save_report_to_db(
+    report_id: str,
+    mode: str,
+    depth: str,
+    source_url: str | None,
+    source_label: str | None,
+    cfr_html: str,
+    social_html: str | None,
+) -> None:
+    """
+    Insert or update a report row in the `reports` table.
+    Safe to no-op if DATABASE_URL is not configured.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        # No DB configured (e.g. local dev) – just skip
+        return
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO reports (
+                        id, mode, depth, source_url, source_label,
+                        cfr_html, social_html
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET
+                        mode = EXCLUDED.mode,
+                        depth = EXCLUDED.depth,
+                        source_url = EXCLUDED.source_url,
+                        source_label = EXCLUDED.source_label,
+                        cfr_html = EXCLUDED.cfr_html,
+                        social_html = EXCLUDED.social_html
+                    """,
+                    (
+                        report_id,
+                        mode,
+                        depth,
+                        source_url,
+                        source_label,
+                        cfr_html,
+                        social_html,
+                    ),
+                )
+    finally:
+        conn.close()
+
+
+def load_report_from_db(report_id: str) -> tuple[str | None, str | None]:
+    """
+    Fetch (cfr_html, social_html) for a report_id from Postgres.
+    Returns (None, None) if not found or DB is not configured.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return None, None
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT cfr_html, social_html
+                    FROM reports
+                    WHERE id = %s
+                    """,
+                    (report_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None, None
+                return row["cfr_html"], row["social_html"]
+    finally:
+        conn.close()
 
 def generate_report_id(source_label: str = "", mode: str = "", depth: str = "full") -> str:
     """
@@ -380,46 +475,45 @@ async def analyze(
             # Unsupported mode
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
 
-        # ---------- Store the report and return HTML ----------
-
-        # ---------- Build social snapshot, strip dev-only sections, and return HTML ----------
+        # ---------- Store the report (DB + in-memory) and return HTML ----------
 
         if not html_report:
             return PlainTextResponse("No report was generated.", status_code=500)
 
-        # 1) Determine the report_id from the built-in URL in the HTML, if possible
-        raw_html = html_report
-        report_id = extract_report_id_from_html(raw_html)
+        # Generate a MindPilot report_id
+        report_id = generate_report_id(
+            source_label=source_label_for_id,
+            mode=mode,
+            depth=depth,
+        )
 
-        # Fallback: generate one if the HTML didn't contain a report URL for some reason
-        if not report_id:
-            report_id = generate_report_id(
-                source_label=source_label_for_id or mode,
+        # In-memory (legacy, still used as a quick cache)
+        REPORT_STORE[report_id] = html_report
+
+        # Persist to Postgres (if configured)
+        try:
+            # You'll already have variables like `source_url` / `source_label_for_id`
+            # in this function; if not, you can pass None for those fields.
+            save_report_to_db(
+                report_id=report_id,
                 mode=mode,
                 depth=depth,
+                source_url=locals().get("youtube_url", None)
+                if mode.lower() == "youtube"
+                else locals().get("article_url", None),
+                source_label=source_label_for_id or None,
+                cfr_html=html_report,
+                social_html=None,  # for now; later you can store your /social page HTML here
             )
+        except Exception:
+            # Don't kill the request if DB write fails; just log it.
+            logging.exception("Failed to save report to Postgres")
 
-        # 2) Build the social snapshot page (card + canonical snippet) BEFORE stripping anything
-        social_html = build_social_share_page(raw_html, report_id)
-
-        # 3) Strip the Copy-Ready Social Snippet section from the CFR
-        cleaned_html = strip_copy_ready_snippet_section(raw_html)
-
-        # 4) If this came from dev_index.html, insert the marketing CTAs
-        if include_marketing_cta_flag:
-            cleaned_html = insert_marketing_cta(cleaned_html, report_id)
-
-        # 5) Store the main CFR
-        REPORT_STORE[report_id] = cleaned_html
-
-        # 6) Store the social snapshot page under a derived key
-        if social_html:
-            REPORT_STORE[f"{report_id}-social"] = social_html
-
-        # 7) Return the CFR HTML to the caller and surface report_id via header
-        response = HTMLResponse(content=cleaned_html, status_code=200)
+        # Return CFR HTML to caller and include report_id header for dev_index.html
+        response = HTMLResponse(content=html_report, status_code=200)
         response.headers["X-MindPilot-Report-ID"] = report_id
         return response
+
 
     except Exception as e:
         logging.error("Error in /analyze endpoint", exc_info=True)
@@ -474,22 +568,36 @@ async def get_report(report_id: str):
     """
     Serve a previously generated Cognitive Flight Report by its report_id.
 
-    NOTE: This is using an in-memory store (REPORT_STORE),
-    so reports are lost if the server restarts. Good enough for dev
-    and short-term testing; later we can swap this for a database or S3.
+    Now prefers the Postgres `reports` table but falls back to the in-memory
+    REPORT_STORE for older or in-flight reports.
     """
-    html = REPORT_STORE.get(report_id)
-    if html is None:
+    # 1) Try Postgres
+    cfr_html, _ = load_report_from_db(report_id)
+
+    # 2) Fallback to in-memory store if DB misses
+    if cfr_html is None:
+        cfr_html = REPORT_STORE.get(report_id)
+
+    if cfr_html is None:
         return PlainTextResponse("Report not found", status_code=404)
-    return HTMLResponse(content=html, status_code=200)
+
+    return HTMLResponse(content=cfr_html, status_code=200)
+
 
 @app.get("/social/{report_id}", response_class=HTMLResponse)
 async def get_social_report(report_id: str):
     """
-    Serve the social-only snapshot page (card + copy-ready snippet) for a given report_id.
+    Serve the social snapshot page (card + snippet) for a given report_id.
     """
-    key = f"{report_id}-social"
-    html = REPORT_STORE.get(key)
-    if html is None:
+    # 1) Try Postgres
+    _, social_html = load_report_from_db(report_id)
+
+    # 2) Fallback to in-memory store if needed
+    if social_html is None:
+        social_html = REPORT_STORE.get(f"{report_id}-social")
+
+    if social_html is None:
         return PlainTextResponse("Social snapshot not found", status_code=404)
-    return HTMLResponse(content=html, status_code=200)
+
+    return HTMLResponse(content=social_html, status_code=200)
+
