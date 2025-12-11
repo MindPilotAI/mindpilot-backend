@@ -7,7 +7,7 @@ import pg8000
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-
+import hashlib
 from fastapi.responses import HTMLResponse, PlainTextResponse
 # (add JSONResponse later if you want; for now we’ll still send plain text)
 
@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Form, UploadFile, File, Depends, HTTPException, status
+from fastapi import FastAPI, Form, UploadFile, File, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -288,6 +288,7 @@ def save_report_to_db(
     cfr_html: str,
     social_html: str | None,
 ) -> None:
+
     """
     Insert or update a report row in the `reports` table.
     Safe to no-op if DATABASE_URL is not configured.
@@ -332,6 +333,63 @@ def save_report_to_db(
             conn.close()
         except Exception:
             pass
+def log_usage(
+    user_id: str | None,
+    ip_hash: str | None,
+    source_type: str | None,
+    depth: str | None,
+    mode: str | None,
+    report_id: str | None,
+    success: bool = True,
+    error_category: str | None = None,
+    error_detail: str | None = None,
+    tokens_used: int | None = None,
+) -> None:
+    """
+    Best-effort logging into usage_logs.
+    - Fails silently if DB is unavailable or the insert fails.
+    - Safe to call on both success and failure.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO usage_logs (
+                        user_id,
+                        ip_hash,
+                        source_type,
+                        depth,
+                        mode,
+                        report_id,
+                        tokens_used,
+                        success,
+                        error_category,
+                        error_detail,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    """,
+                    (
+                        user_id,
+                        ip_hash,
+                        source_type,
+                        depth,
+                        mode,
+                        report_id,
+                        tokens_used,
+                        success,
+                        error_category,
+                        error_detail,
+                    ),
+                )
+    except Exception:
+        # Do not break the request just because logging failed
+        logging.exception("Failed to log usage")
 
 
 def load_report_from_db(report_id: str) -> tuple[str | None, str | None]:
@@ -616,16 +674,16 @@ async def health():
 # ---------------------------------------------------------
 # Auth: signup / login / me
 # ---------------------------------------------------------
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 
 class SignupRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
@@ -714,6 +772,7 @@ async def analyze(
     article_title: str = Form(""),
     article_url: str = Form(""),
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+    request: Request = None,
 ):
     user_id_for_logging = current_user["id"] if current_user else None
     """
@@ -726,6 +785,14 @@ async def analyze(
     - depth = "quick" or "full"
     """
     logging.info(f"[MindPilot] /analyze received mode={mode}, depth={depth}")
+    # Identify the user (if any) and hash the caller IP for usage_logs
+    user_id_for_logging = current_user["id"] if current_user else None
+
+    client_ip = request.client.host if request and request.client else None
+    if client_ip:
+        ip_hash = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:64]
+    else:
+        ip_hash = None
 
     # Normalise depth
     depth = (depth or "full").lower().strip()
@@ -757,6 +824,7 @@ async def analyze(
         if file is not None and file.filename:
             filename = file.filename
             source_label_for_id = filename
+            source_type_for_logs = "document"
 
             logging.info(
                 f"[MindPilot] Running {depth} document analysis for upload: {filename}"
@@ -785,6 +853,7 @@ async def analyze(
         elif mode.lower() == "youtube":
             youtube_url = input_value.strip()
             source_label_for_id = youtube_url
+            source_type_for_logs = "youtube"
 
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
 
@@ -818,6 +887,7 @@ async def analyze(
                     source_label_for_id = f"Text: {snippet}"
                 else:
                     source_label_for_id = "Pasted text"
+            source_type_for_logs = "text"
 
             logging.info(
                 f"[MindPilot] Running {depth} TEXT analysis "
@@ -852,6 +922,7 @@ async def analyze(
             article_url = effective_url
 
             source_label_for_id = article_title or (effective_url or "Article")
+            source_type_for_logs = "article"
 
             logging.info(
                 f"[MindPilot] Running {depth} ARTICLE analysis: {effective_url}"
@@ -926,6 +997,20 @@ async def analyze(
             )
         except Exception:
             logging.exception("Failed to save report to Postgres")
+        # Log successful usage (best-effort)
+        try:
+            log_usage(
+                user_id=user_id_for_logging,
+                ip_hash=ip_hash,
+                source_type=source_type_for_logs if "source_type_for_logs" in locals() else None,
+                depth=depth,
+                mode=mode.lower(),
+                report_id=report_id,
+                success=True,
+                tokens_used=None,          # we can wire real token counts later
+            )
+        except Exception:
+            logging.exception("Failed to log usage")
 
         # Return CFR HTML to caller and include report_id header for dev_index.html
         response = HTMLResponse(content=html_report, status_code=200)
