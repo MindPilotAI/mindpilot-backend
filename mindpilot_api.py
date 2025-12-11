@@ -345,6 +345,123 @@ def log_usage(
     error_detail: str | None = None,
     tokens_used: int | None = None,
 ) -> None:
+    def check_user_limits(
+            user: Optional[Dict[str, Any]],
+            ip_hash: Optional[str],
+            depth: str,
+            mode: str,
+    ) -> None:
+        """
+        Enforce simple per-user / per-IP limits.
+        - Superusers are exempt.
+        - If the DB is unavailable, do NOT block: degrade gracefully.
+        """
+
+        # Superuser (you) is never throttled
+        if is_superuser(user):
+            return
+
+        conn = get_db_connection()
+        if conn is None:
+            # No DB? Don't block. Just run in "best effort" mode.
+            return
+
+        try:
+            # Normalize
+            depth = (depth or "").lower()
+            mode = (mode or "").lower()
+
+            # Simple tier mapping
+            if user:
+                plan = (user.get("plan") or "free").lower()
+            else:
+                plan = "guest"
+
+            # Limits (MVP – can tune later)
+            # You can change these numbers easily.
+            if plan == "guest":
+                quick_limit_per_day = 3
+                full_limit_per_day = 0  # guests can't do full
+            elif plan == "free":
+                quick_limit_per_day = 10
+                full_limit_per_day = 3
+            elif plan in ("pro", "enterprise"):
+                # For now, no hard limits; we'll rely on token caps later
+                return
+            else:
+                # Unknown plan, treat as free
+                quick_limit_per_day = 10
+                full_limit_per_day = 3
+
+            now = datetime.utcnow()
+            day_start = datetime(now.year, now.month, now.day)  # UTC midnight
+
+            with conn:
+                with conn.cursor() as cur:
+                    # Decide how we identify the caller:
+                    # - logged-in user → use user_id
+                    # - anonymous guest → use ip_hash
+                    if user and user.get("id"):
+                        cur.execute(
+                            """
+                            SELECT depth, COUNT(*)
+                            FROM usage_logs
+                            WHERE user_id = %s
+                              AND success = TRUE
+                              AND created_at >= %s
+                            GROUP BY depth
+                            """,
+                            (user["id"], day_start),
+                        )
+                    elif ip_hash:
+                        cur.execute(
+                            """
+                            SELECT depth, COUNT(*)
+                            FROM usage_logs
+                            WHERE ip_hash = %s
+                              AND success = TRUE
+                              AND created_at >= %s
+                            GROUP BY depth
+                            """,
+                            (ip_hash, day_start),
+                        )
+                    else:
+                        # No user and no IP? Nothing to count against.
+                        return
+
+                    usage_by_depth: Dict[str, int] = {}
+                    for row in cur.fetchall():
+                        d, count = row[0], row[1]
+                        if d:
+                            usage_by_depth[d.lower()] = count
+
+            quick_used = usage_by_depth.get("quick", 0)
+            full_used = usage_by_depth.get("full", 0)
+
+            if depth == "quick" and quick_limit_per_day >= 0 and quick_used >= quick_limit_per_day:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Quick report limit reached for today. Please try again tomorrow or upgrade your plan.",
+                )
+
+            if depth == "full" and full_limit_per_day >= 0 and full_used >= full_limit_per_day:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Full report limit reached for today. Please try again tomorrow or upgrade your plan.",
+                )
+
+        except HTTPException:
+            # Re-raise rate-limit exceptions as-is
+            raise
+        except Exception:
+            # Logging only; don't break analysis if limit check fails
+            logging.exception("Rate limit check failed")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     """
     Best-effort logging into usage_logs.
     - Fails silently if DB is unavailable or the insert fails.
@@ -653,6 +770,13 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+def check_user_limits(
+    user: Optional[Dict[str, Any]],
+    ip_hash: Optional[str],
+    depth: str,
+    mode: str,
+) -> None:
+    ...
 
 app = FastAPI(title="MindPilot API")
 
@@ -774,7 +898,6 @@ async def analyze(
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
     request: Request = None,
 ):
-    user_id_for_logging = current_user["id"] if current_user else None
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
@@ -785,6 +908,7 @@ async def analyze(
     - depth = "quick" or "full"
     """
     logging.info(f"[MindPilot] /analyze received mode={mode}, depth={depth}")
+
     # Identify the user (if any) and hash the caller IP for usage_logs
     user_id_for_logging = current_user["id"] if current_user else None
 
@@ -793,6 +917,9 @@ async def analyze(
         ip_hash = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:64]
     else:
         ip_hash = None
+
+    # Enforce per-user / per-IP limits (best-effort; DB failure → no block)
+    check_user_limits(current_user, ip_hash, depth, mode)
 
     # Normalise depth
     depth = (depth or "full").lower().strip()
@@ -875,10 +1002,8 @@ async def analyze(
             # Build a human-friendly label for pasted text so you
             # can remember what this report was about later.
             if article_title:
-                # If the user explicitly gave a title, use it.
                 source_label_for_id = article_title
             else:
-                # Otherwise, derive a short label from the first line of text.
                 snippet = (input_value or "").strip().splitlines()[0] if input_value else ""
                 snippet = snippet.strip()
                 if snippet:
@@ -906,17 +1031,13 @@ async def analyze(
                     source_label=source_label_for_id,
                 )
 
-            # For DB and Source card: optional article_url + derived label
             source_url_for_db = article_url
             source_label_for_db = source_label_for_id
-
 
         # -------------------------------------------------
         # 4) Article URL mode
         # -------------------------------------------------
         elif mode.lower() == "article":
-            # Frontend may supply article_url + article_title explicitly;
-            # if not, fall back to input_value as the URL.
             url_from_input = input_value.strip()
             effective_url = article_url or url_from_input or None
             article_url = effective_url
@@ -955,36 +1076,29 @@ async def analyze(
         if not html_report:
             return PlainTextResponse("No report was generated.", status_code=500)
 
-        # Generate a MindPilot report_id
         report_id = generate_report_id(
             source_label=source_label_for_id,
             mode=mode,
             depth=depth,
         )
 
-        # Build optional social snapshot + marketing CTAs
         social_html: str | None = None
         try:
             if include_marketing_cta_flag:
-                # Use the original CFR HTML (with social card + snippet) to build the snapshot
                 social_html = build_social_share_page(html_report, report_id)
 
-            # Strip the copy-ready snippet block from the CFR itself
             html_report = strip_copy_ready_snippet_section(html_report)
 
-            # Only dev_index (include_marketing_cta_flag) gets embedded CTAs
             if include_marketing_cta_flag:
                 html_report = insert_marketing_cta(html_report, report_id)
 
         except Exception:
             logging.exception("Failed to build social/CTA HTML")
 
-        # In-memory (legacy, still used as a quick cache)
         REPORT_STORE[report_id] = html_report
         if social_html:
             REPORT_STORE[f"{report_id}-social"] = social_html
 
-        # Persist to Postgres (if configured)
         try:
             save_report_to_db(
                 report_id=report_id,
@@ -997,6 +1111,7 @@ async def analyze(
             )
         except Exception:
             logging.exception("Failed to save report to Postgres")
+
         # Log successful usage (best-effort)
         try:
             log_usage(
@@ -1007,16 +1122,14 @@ async def analyze(
                 mode=mode.lower(),
                 report_id=report_id,
                 success=True,
-                tokens_used=None,          # we can wire real token counts later
+                tokens_used=None,
             )
         except Exception:
             logging.exception("Failed to log usage")
 
-        # Return CFR HTML to caller and include report_id header for dev_index.html
         response = HTMLResponse(content=html_report, status_code=200)
         response.headers["X-MindPilot-Report-ID"] = report_id
         return response
-
 
     except ContentBlockedError as e:
 
