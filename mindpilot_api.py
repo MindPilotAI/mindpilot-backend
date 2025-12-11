@@ -15,10 +15,11 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from urllib.parse import urlparse
 
 
-from datetime import datetime
-from fastapi import FastAPI, Form, UploadFile, File
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Form, UploadFile, File, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from mindpilot_engine import (
     run_full_analysis_from_youtube,
     run_full_analysis_from_text,
@@ -32,6 +33,10 @@ from mindpilot_engine import (
 )
 
 from mindpilot_analyze import TranscriptUnavailableError
+from typing import Optional, Dict, Any
+
+from passlib.context import CryptContext
+import jwt
 
 # Simple in-memory store: report_id -> HTML
 REPORT_STORE: dict[str, str] = {}
@@ -43,6 +48,172 @@ def get_db_connection():
     if not db_url:
         return None
     return psycopg2.connect(db_url, cursor_factory=DictCursor)
+# ---------------------------------------------------------
+# Auth / JWT configuration
+# ---------------------------------------------------------
+SECRET_KEY = os.getenv("MP_JWT_SECRET", "change-me-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# auto_error=False so missing/invalid token just means "guest"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login", auto_error=False)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        return False
+def is_superuser(user: Optional[Dict[str, Any]]) -> bool:
+    if not user:
+        return False
+    if SUPERUSER_EMAIL and user.get("email"):
+        if user["email"].lower() == SUPERUSER_EMAIL.lower():
+            return True
+    # also allow a special plan label as a backup
+    return user.get("plan") == "admin"
+
+
+def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, email, password_hash, plan, is_active
+                FROM users
+                WHERE lower(email) = lower(%s)
+                """,
+                (email,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "email": row[1],
+                "password_hash": row[2],
+                "plan": row[3],
+                "is_active": row[4],
+            }
+    except Exception:
+        logging.exception("Failed to load user by email")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, email, password_hash, plan, is_active
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "email": row[1],
+                "password_hash": row[2],
+                "plan": row[3],
+                "is_active": row[4],
+            }
+    except Exception:
+        logging.exception("Failed to load user by id")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def create_user(email: str, password: str) -> Dict[str, Any]:
+    conn = get_db_connection()
+    if not conn:
+        raise RuntimeError("Database not available")
+
+    user_id = f"user-{int(datetime.utcnow().timestamp() * 1000)}"
+    hashed = get_password_hash(password)
+    now = datetime.utcnow()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, email, password_hash, plan, is_active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, email, plan, is_active
+                """,
+                (user_id, email, hashed, "free", True, now, now),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {
+            "id": row[0],
+            "email": row[1],
+            "plan": row[2],
+            "is_active": row[3],
+        }
+    except psycopg2.Error as exc:
+        logging.exception("Failed to create user")
+        # most likely duplicate email
+        raise exc
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme)) -> Optional[Dict[str, Any]]:
+    """
+    Decode JWT and return the user dict, or None if:
+    - no token
+    - token invalid/expired
+    - user not found / inactive
+
+    This keeps /analyze usable in guest mode.
+    """
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: Optional[str] = payload.get("sub")
+        if not user_id:
+            return None
+    except jwt.PyJWTError:
+        return None
+
+    user = get_user_by_id(user_id)
+    if not user or not user.get("is_active"):
+        return None
+    return user
 
 
 def log_blockage_to_db(
@@ -442,6 +613,93 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+# ---------------------------------------------------------
+# Auth: signup / login / me
+# ---------------------------------------------------------
+from pydantic import BaseModel, EmailStr
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@app.post("/signup")
+async def signup(payload: SignupRequest):
+    # If DB is down, don't crash the whole app – just fail signup gracefully.
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User system temporarily unavailable. Please try again later.",
+        )
+    conn.close()
+
+    existing = get_user_by_email(payload.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Email is already registered.")
+
+    try:
+        user = create_user(payload.email, payload.password)
+    except psycopg2.Error:
+        raise HTTPException(status_code=400, detail="Could not create user.")
+
+    token = create_access_token({"sub": user["id"]})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "plan": user["plan"],
+        },
+    }
+
+
+@app.post("/login")
+async def login(payload: LoginRequest):
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User system temporarily unavailable. Please try again later.",
+        )
+    conn.close()
+
+    user = get_user_by_email(payload.email)
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        # Do not reveal which part failed
+        raise HTTPException(status_code=401, detail="Incorrect email or password.")
+
+    if not user["is_active"]:
+        raise HTTPException(status_code=403, detail="Account is inactive.")
+
+    token = create_access_token({"sub": user["id"]})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "plan": user["plan"],
+        },
+    }
+
+
+@app.get("/me")
+async def me(current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "plan": current_user["plan"],
+    }
 
 # ---------------------------------------------------------
 # Main Analysis Endpoint
@@ -455,7 +713,9 @@ async def analyze(
     include_marketing_cta: str = Form("0"),
     article_title: str = Form(""),
     article_url: str = Form(""),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
 ):
+    user_id_for_logging = current_user["id"] if current_user else None
     """
     Primary MindPilot analysis endpoint.
     Form-based to match Netlify frontend.
