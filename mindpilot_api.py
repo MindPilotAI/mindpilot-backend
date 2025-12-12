@@ -11,14 +11,12 @@ import hashlib
 from fastapi.responses import HTMLResponse, PlainTextResponse
 # (add JSONResponse later if you want; for now we’ll still send plain text)
 from pydantic import BaseModel
-
 import uuid
 import hashlib
 import hmac
 import base64
 import json
 import time
-
 
 from urllib.parse import urlparse
 
@@ -427,6 +425,195 @@ def get_db_connection():
         port=port,
         database=database,
     )
+# -------------------------------------------------------------------
+# Auth / token helpers
+# -------------------------------------------------------------------
+
+JWT_SECRET = os.getenv("MP_JWT_SECRET", "dev-secret-change-me")
+JWT_EXP_SECONDS = 7 * 24 * 3600  # 7 days
+SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")
+
+
+def hash_password(plain_password: str) -> str:
+    """Hash a password using PBKDF2-HMAC with a random salt."""
+    salt = uuid.uuid4().hex
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100_000,
+    )
+    return f"{salt}${base64.b16encode(dk).decode('ascii')}"
+
+
+def verify_password(plain_password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored salt$hash string."""
+    try:
+        salt, hex_hash = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100_000,
+    )
+    return base64.b16encode(dk).decode("ascii") == hex_hash
+
+
+def create_access_token(user_id: str, email: str, plan: str) -> str:
+    """Create a simple HMAC-signed token with exp, sub, email, plan."""
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "plan": plan,
+        "exp": int(time.time()) + JWT_EXP_SECONDS,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    sig = hmac.new(JWT_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
+    token = (
+        base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        + "."
+        + base64.urlsafe_b64encode(sig).decode().rstrip("=")
+    )
+    return token
+
+
+def decode_access_token(token: str):
+    """Decode and verify the HMAC token. Return payload dict or None."""
+    try:
+        raw_b64, sig_b64 = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(raw_b64 + "===")
+        expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
+        actual_sig = base64.urlsafe_b64decode(sig_b64 + "===")
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            raise ValueError("Invalid signature")
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("exp") and payload["exp"] < int(time.time()):
+            raise ValueError("Token expired")
+        return payload
+    except Exception:
+        return None
+
+
+def get_user_by_email(email: str):
+    """Fetch a user row as a dict by email, or None."""
+    conn = get_db_connection()
+    if conn is None:
+        return None
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, email, password_hash, plan, is_active
+                    FROM users
+                    WHERE email = %s
+                    """,
+                    (email.lower(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                # pg8000 returns row as a sequence
+                return {
+                    "id": row[0],
+                    "email": row[1],
+                    "password_hash": row[2],
+                    "plan": row[3] or "free",
+                    "is_active": bool(row[4]),
+                }
+    except Exception:
+        logging.exception("Failed to fetch user by email")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def create_user(email: str, plain_password: str):
+    """Insert a new user row and return a dict for the user."""
+    conn = get_db_connection()
+    if conn is None:
+        raise RuntimeError("Database unavailable")
+
+    user_id = str(uuid.uuid4())
+    password_hash = hash_password(plain_password)
+    plan = "free"
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (id, email, password_hash, plan, is_active, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, now(), now())
+                    """,
+                    (user_id, email.lower(), password_hash, plan, True),
+                )
+        return {
+            "id": user_id,
+            "email": email.lower(),
+            "password_hash": password_hash,
+            "plan": plan,
+            "is_active": True,
+        }
+    except Exception:
+        logging.exception("Failed to create user")
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+def is_superuser(user) -> bool:
+    """Treat MP_SUPERUSER_EMAIL or plan='admin' as superuser."""
+    if not user:
+        return False
+    email = (user.get("email") or "").lower()
+    if SUPERUSER_EMAIL and email == SUPERUSER_EMAIL.lower():
+        return True
+    return (user.get("plan") or "").lower() == "admin"
+
+
+def get_current_user_optional(request: Request):
+    """
+    Extract user from Authorization: Bearer <token>, or return None.
+    Does NOT raise if token is invalid/expired; just returns None.
+    """
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+
+    token = auth_header.split(" ", 1)[1].strip()
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+
+    email = payload.get("email")
+    if not email:
+        return None
+
+    user = get_user_by_email(email)
+    if not user:
+        return None
+
+    return user
 
 
 def save_report_to_db(
