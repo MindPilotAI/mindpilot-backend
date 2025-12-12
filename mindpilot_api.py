@@ -84,15 +84,38 @@ def get_db_connection():
 # AUTH HELPERS (bcrypt + PyJWT)
 # -------------------------------------------------------------------
 
+# ---------- Password helpers (bcrypt 72-byte limit) ----------
+
+def _normalize_for_bcrypt(plain_password: str) -> str:
+    """
+    Bcrypt only uses the first 72 bytes of the password.
+    To avoid runtime errors, we:
+      - ensure it's a string
+      - truncate to 72 bytes in UTF-8
+    """
+    if not isinstance(plain_password, str):
+        plain_password = str(plain_password)
+
+    pw_bytes = plain_password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+
+    # decode back to str; ignore any partial multibyte at the cutoff
+    return pw_bytes.decode("utf-8", errors="ignore")
+
+
 def hash_password(plain_password: str) -> str:
-    return pwd_context.hash(plain_password)
+    safe_pw = _normalize_for_bcrypt(plain_password)
+    return pwd_context.hash(safe_pw)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
-        return pwd_context.verify(plain_password, hashed_password)
+        safe_pw = _normalize_for_bcrypt(plain_password)
+        return pwd_context.verify(safe_pw, hashed_password)
     except Exception:
         return False
+
 
 
 def create_access_token(
