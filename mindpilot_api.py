@@ -10,6 +10,14 @@ from psycopg2.extras import DictCursor
 import hashlib
 from fastapi.responses import HTMLResponse, PlainTextResponse
 # (add JSONResponse later if you want; for now we’ll still send plain text)
+from pydantic import BaseModel
+
+import uuid
+import hashlib
+import hmac
+import base64
+import json
+import time
 
 
 from urllib.parse import urlparse
@@ -42,12 +50,154 @@ import jwt
 REPORT_STORE: dict[str, str] = {}
 # Database connection string injected by Railway
 DATABASE_URL = os.getenv("DATABASE_URL")
+# -------------------------------------------------------------------
+# Auth / JWT-like token helpers (no extra dependencies)
+# -------------------------------------------------------------------
+
+JWT_SECRET = os.getenv("MP_JWT_SECRET", "dev-secret-change-me")
+JWT_EXP_SECONDS = 7 * 24 * 3600  # 7 days
+SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")
+
+
+def hash_password(plain_password: str) -> str:
+    """Hash a password using PBKDF2-HMAC with a random salt."""
+    salt = uuid.uuid4().hex
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100_000,
+    )
+    return f"{salt}${base64.b16encode(dk).decode('ascii')}"
+
+
+def verify_password(plain_password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored salt$hash string."""
+    try:
+        salt, hex_hash = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100_000,
+    )
+    return base64.b16encode(dk).decode("ascii") == hex_hash
+
+
+def create_access_token(user_id: str, email: str, plan: str) -> str:
+    """Create a simple HMAC-signed token with exp, sub, email, plan."""
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "plan": plan,
+        "exp": int(time.time()) + JWT_EXP_SECONDS,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    sig = hmac.new(JWT_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
+    token = (
+        base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        + "."
+        + base64.urlsafe_b64encode(sig).decode().rstrip("=")
+    )
+    return token
+
+
+def decode_access_token(token: str):
+    """Decode and verify the HMAC token. Return payload dict or None."""
+    try:
+        raw_b64, sig_b64 = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(raw_b64 + "===")
+        expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
+        actual_sig = base64.urlsafe_b64decode(sig_b64 + "===")
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            raise ValueError("Invalid signature")
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("exp") and payload["exp"] < int(time.time()):
+            raise ValueError("Token expired")
+        return payload
+    except Exception:
+        return None
 
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         return None
     return psycopg2.connect(db_url, cursor_factory=DictCursor)
+def get_user_by_email(email: str):
+    """Fetch a user row as a dict by email, or None."""
+    conn = get_db_connection()
+    if conn is None:
+        return None
+
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT id, email, password_hash, plan, is_active
+                    FROM users
+                    WHERE email = %s
+                    """,
+                    (email.lower(),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row["id"],
+                    "email": row["email"],
+                    "password_hash": row["password_hash"],
+                    "plan": row.get("plan") or "free",
+                    "is_active": row.get("is_active", True),
+                }
+    except Exception:
+        logging.exception("Failed to fetch user by email")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def create_user(email: str, plain_password: str):
+    """Insert a new user row and return a dict for the user."""
+    conn = get_db_connection()
+    if conn is None:
+        raise RuntimeError("Database unavailable")
+
+    user_id = str(uuid.uuid4())
+    password_hash = hash_password(plain_password)
+    plan = "free"
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (id, email, password_hash, plan, is_active, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, now(), now())
+                    """,
+                    (user_id, email.lower(), password_hash, plan, True),
+                )
+        return {
+            "id": user_id,
+            "email": email.lower(),
+            "password_hash": password_hash,
+            "plan": plan,
+            "is_active": True,
+        }
+    except Exception:
+        logging.exception("Failed to create user")
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 # ---------------------------------------------------------
 # Auth / JWT configuration
 # ---------------------------------------------------------
@@ -288,6 +438,77 @@ def save_report_to_db(
     cfr_html: str,
     social_html: str | None,
 ) -> None:
+    def get_user_by_email(email: str):
+        """Fetch a user row as a dict by email, or None."""
+        conn = get_db_connection()
+        if conn is None:
+            return None
+
+        try:
+            with conn:
+                with conn.cursor(cursor_factory=DictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT id, email, password_hash, plan, is_active
+                        FROM users
+                        WHERE email = %s
+                        """,
+                        (email.lower(),),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    return {
+                        "id": row["id"],
+                        "email": row["email"],
+                        "password_hash": row["password_hash"],
+                        "plan": row.get("plan") or "free",
+                        "is_active": row.get("is_active", True),
+                    }
+        except Exception:
+            logging.exception("Failed to fetch user by email")
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def create_user(email: str, plain_password: str):
+        """Insert a new user row and return a dict for the user."""
+        conn = get_db_connection()
+        if conn is None:
+            raise RuntimeError("Database unavailable")
+
+        user_id = str(uuid.uuid4())
+        password_hash = hash_password(plain_password)
+        plan = "free"
+
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO users (id, email, password_hash, plan, is_active, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, now(), now())
+                        """,
+                        (user_id, email.lower(), password_hash, plan, True),
+                    )
+            return {
+                "id": user_id,
+                "email": email.lower(),
+                "password_hash": password_hash,
+                "plan": plan,
+                "is_active": True,
+            }
+        except Exception:
+            logging.exception("Failed to create user")
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     """
     Insert or update a report row in the `reports` table.
@@ -777,6 +998,49 @@ def check_user_limits(
     mode: str,
 ) -> None:
     ...
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+def is_superuser(user) -> bool:
+    """Treat MP_SUPERUSER_EMAIL or plan='admin' as superuser."""
+    if not user:
+        return False
+    email = (user.get("email") or "").lower()
+    if SUPERUSER_EMAIL and email == SUPERUSER_EMAIL.lower():
+        return True
+    return (user.get("plan") or "").lower() == "admin"
+
+
+def get_current_user_optional(request: Request):
+    """
+    Extract user from Authorization: Bearer <token>, or return None.
+    Does NOT raise if token is invalid/expired; just returns None.
+    """
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+
+    token = auth_header.split(" ", 1)[1].strip()
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+
+    email = payload.get("email")
+    if not email:
+        return None
+
+    user = get_user_by_email(email)
+    if not user:
+        return None
+
+    return user
 
 app = FastAPI(title="MindPilot API")
 
@@ -788,6 +1052,72 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-MindPilot-Report-ID"],  # 👈 critical line
 )
+# ---------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------
+
+
+@app.post("/signup")
+async def signup(payload: SignupRequest):
+    existing = get_user_by_email(payload.email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered.",
+        )
+
+    try:
+        user = create_user(payload.email, payload.password)
+    except Exception:
+        # Logged inside create_user
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create user.",
+        )
+
+    token = create_access_token(user["id"], user["email"], user.get("plan") or "free")
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "plan": user.get("plan") or "free",
+    }
+
+
+@app.post("/login")
+async def login(payload: LoginRequest):
+    user = get_user_by_email(payload.email)
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect email or password.",
+        )
+    if not user.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive.",
+        )
+
+    token = create_access_token(user["id"], user["email"], user.get("plan") or "free")
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "plan": user.get("plan") or "free",
+    }
+
+
+@app.get("/me")
+async def me(current_user=Depends(get_current_user_optional)):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated.",
+        )
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "plan": current_user.get("plan", "free"),
+        "is_superuser": is_superuser(current_user),
+    }
 
 # ---------------------------------------------------------
 # Health Check
