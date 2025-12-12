@@ -474,8 +474,13 @@ async def signup(payload: SignupRequest):
 
     try:
         user = create_user(payload.email, payload.password)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Could not create user")
+    except Exception as e:
+        logging.exception("Signup failed")
+        # TEMPORARY: surface the DB error so we can debug
+        raise HTTPException(
+            status_code=500,
+            detail=f"DB error during signup: {e}",
+        )
 
     access_token = create_access_token(
         {"sub": user["id"], "email": user["email"], "plan": user["plan"]}
@@ -487,6 +492,7 @@ async def signup(payload: SignupRequest):
         "email": user["email"],
         "plan": user["plan"],
     }
+
 
 
 @app.post("/login")
