@@ -616,6 +616,7 @@ def get_current_user_optional(request: Request):
     return user
 
 
+
 def save_report_to_db(
     report_id: str,
     mode: str,
@@ -1256,7 +1257,7 @@ async def signup(payload: SignupRequest):
     try:
         user = create_user(payload.email, payload.password)
     except Exception:
-        # Logged inside create_user
+        # Logged in create_user
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create user.",
