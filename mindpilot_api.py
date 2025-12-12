@@ -491,20 +491,33 @@ app.add_middleware(
 
 @app.post("/signup")
 async def signup(payload: SignupRequest):
-    existing = get_user_by_email(payload.email)
+    # 1) Normalize inputs
+    email = (payload.email or "").strip()
+    raw_password = payload.password or ""
+
+    # 2) Enforce bcrypt's 72-byte limit *before* we ever call hash_password
+    pw_bytes = raw_password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+    safe_password = pw_bytes.decode("utf-8", errors="ignore")
+
+    # 3) Check for existing user
+    existing = get_user_by_email(email)
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # 4) Create user with the truncated password
     try:
-        user = create_user(payload.email, payload.password)
+        user = create_user(email, safe_password)
     except Exception as e:
         logging.exception("Signup failed")
-        # TEMPORARY: surface the DB error so we can debug
+        # TEMPORARY: surface the error so we can still debug if something else goes wrong
         raise HTTPException(
             status_code=500,
             detail=f"DB error during signup: {e}",
         )
 
+    # 5) Issue JWT
     access_token = create_access_token(
         {"sub": user["id"], "email": user["email"], "plan": user["plan"]}
     )
@@ -515,8 +528,6 @@ async def signup(payload: SignupRequest):
         "email": user["email"],
         "plan": user["plan"],
     }
-
-
 
 @app.post("/login")
 async def login(payload: LoginRequest):
