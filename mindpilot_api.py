@@ -1,16 +1,16 @@
 # mindpilot_api.py  — CLEAN VERSION (bcrypt + PyJWT + psycopg2)
-
+import base64
+import hmac
+import secrets
 import hashlib
 import logging
 import os
 import re
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-
 import jwt  # PyJWT
 import psycopg2
 from psycopg2.extras import DictCursor
-
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
 from fastapi import (
     FastAPI,
     Form,
@@ -59,7 +59,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")  # optional
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
@@ -81,41 +80,58 @@ def get_db_connection():
 
 
 # -------------------------------------------------------------------
-# AUTH HELPERS (bcrypt + PyJWT)
+# AUTH HELPERS (PBKDF2 + PyJWT)
 # -------------------------------------------------------------------
 
-# ---------- Password helpers (bcrypt 72-byte limit) ----------
+# ---------- Password helpers (PBKDF2-HMAC-SHA256, no 72-byte limit) ----------
 
-def _normalize_for_bcrypt(plain_password: str) -> str:
+def hash_password(plain_password: str) -> str:
     """
-    Bcrypt only uses the first 72 bytes of the password.
-    To avoid runtime errors, we:
-      - ensure it's a string
-      - truncate to 72 bytes in UTF-8
+    Derive a hash using PBKDF2-HMAC-SHA256.
+    Stored format: "pbkdf2_sha256$iterations$salt$base64(digest)".
     """
     if not isinstance(plain_password, str):
         plain_password = str(plain_password)
 
-    pw_bytes = plain_password.encode("utf-8")
-    if len(pw_bytes) > 72:
-        pw_bytes = pw_bytes[:72]
+    iterations = 100_000
+    salt = secrets.token_hex(16)
 
-    # decode back to str; ignore any partial multibyte at the cutoff
-    return pw_bytes.decode("utf-8", errors="ignore")
-
-
-def hash_password(plain_password: str) -> str:
-    safe_pw = _normalize_for_bcrypt(plain_password)
-    return pwd_context.hash(safe_pw)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    )
+    digest_b64 = base64.b64encode(dk).decode("ascii")
+    return f"pbkdf2_sha256${iterations}${salt}${digest_b64}"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a PBKDF2-HMAC-SHA256 password hash.
+    If the stored format doesn't match, return False (treat as invalid).
+    """
     try:
-        safe_pw = _normalize_for_bcrypt(plain_password)
-        return pwd_context.verify(safe_pw, hashed_password)
+        if not isinstance(plain_password, str):
+            plain_password = str(plain_password)
+
+        scheme, iter_str, salt, digest_b64 = hashed_password.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            # Unknown / old scheme — treat as mismatch.
+            return False
+
+        iterations = int(iter_str)
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+
+        dk = hashlib.pbkdf2_hmac(
+            "sha256",
+            plain_password.encode("utf-8"),
+            salt.encode("utf-8"),
+            iterations,
+        )
+        return hmac.compare_digest(expected, dk)
     except Exception:
         return False
-
 
 
 def create_access_token(
