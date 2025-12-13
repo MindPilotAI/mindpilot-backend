@@ -9,6 +9,15 @@ class TranscriptUnavailableError(RuntimeError):
 from urllib.parse import urlparse, parse_qs
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+def escape_html(text: str) -> str:
+    if text is None:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 # from mindpilot_llm_client import run_mindpilot_analysis, classify_content
 
@@ -461,6 +470,7 @@ def build_social_card_html(
     report_url: str | None,
     source_url: str | None,
     escape_html,
+    creator_checklist_html: str = "",
 ) -> str:
     """
     Build the reusable social card HTML block used both:
@@ -575,7 +585,7 @@ def build_social_card_html(
                 if (
                         first.startswith("#")
                         or first_lower.startswith("grok enrichment")
-                        or (len(first) < 80 and "." not in first)
+                        or (len(first) < 140 and "." not in first)
                 ):
                     lines = lines[1:]
 
@@ -683,39 +693,10 @@ def build_social_card_html(
           <span>{footer_left}</span>
           <span class="social-watermark">MindPilot · Cognitive Flight Report</span>
         </div>
+        {creator_checklist_html}
       </section>
-      
-        .social-fallacy-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.78rem;
-      margin-top: 0.4rem;
-    }}
     
-    .social-fallacy-table th,
-    .social-fallacy-table td {{
-      padding: 0.2rem 0.4rem;
-    }}
-    
-    .social-fallacy-table th {{
-      font-size: 0.65rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: #A0AEC0;
-      border-bottom: 1px solid rgba(255,255,255,0.15);
-    }}
-    
-    .social-fallacy-table td:first-child {{
-      width: 85%;     /* fills most of the left half */
-    }}
-    
-    .social-fallacy-table td:last-child {{
-      white-space: nowrap;
-      text-align: right;
-    }}
-
     """
-
 
 def build_social_page_html(
     *,
@@ -755,6 +736,7 @@ def build_social_page_html(
         report_url=report_url,
         source_url=None,     # no direct source link on teh standalone snippet page (for now)
         escape_html=_escape_html,
+        creator_checklist_html="",
     )
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1046,6 +1028,164 @@ def build_social_page_html(
 # Social card: this is the same design used on /social/{report_id}
 # We render it at the top of the full report for continuity from social → report.
 
+def parse_master_map_items(raw_map: str) -> list[dict]:
+    """
+    Parse the Master Fallacy & Bias Map into structured items:
+      {category, name, severity, description}
+
+    Expected input resembles:
+      - **Logical Fallacies**
+        - **Straw Man**: ... (High)
+    """
+    if not raw_map:
+        return []
+
+    items: list[dict] = []
+    current_category = ""
+
+    for line in raw_map.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+
+        # Category headers like: - **Logical Fallacies**
+        if s.startswith("- **") and s.endswith("**") and ":" not in s:
+            current_category = s.replace("- **", "").replace("**", "").strip()
+            continue
+
+        # Item lines like: - **Name**: description (High)
+        m = re.match(r"^-?\s*\*\*(.+?)\*\*:\s*(.+)$", s.replace("- ", ""), flags=re.IGNORECASE)
+        if not m:
+            continue
+
+        name = m.group(1).strip()
+        tail = m.group(2).strip()
+
+        severity = ""
+        desc = tail
+
+        sev_match = re.search(r"\((High|Medium|Med|Low)\)\s*$", tail, flags=re.IGNORECASE)
+        if sev_match:
+            sev = sev_match.group(1).lower()
+            severity = "Medium" if sev == "med" else sev.capitalize()
+            desc = re.sub(r"\((High|Medium|Med|Low)\)\s*$", "", tail, flags=re.IGNORECASE).strip()
+
+        items.append(
+            {
+                "category": current_category or "Pattern group",
+                "name": name,
+                "severity": severity or "Medium",
+                "description": desc,
+            }
+        )
+
+    return items
+
+
+def extract_overall_score_100(rationality_profile: str) -> int | None:
+    if not rationality_profile:
+        return None
+    m = re.search(r"Overall reasoning score:\s*([0-9]{1,3})\s*/\s*100", rationality_profile, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        val = int(m.group(1))
+        return max(0, min(100, val))
+    except Exception:
+        return None
+
+
+def build_pro_quick_creator_checklist_html(
+    *,
+    master_map: str,
+    rationality_profile: str,
+    questions_block: str,
+) -> str:
+    """
+    Deterministic, rule-based checklist. No extra LLM calls.
+    Triggers are driven by patterns present in master_map + rationality_profile.
+    """
+    items = parse_master_map_items(master_map)
+    score100 = extract_overall_score_100(rationality_profile)
+
+    # Normalize names for matching
+    names = [it["name"].lower() for it in items]
+    severities = {it["name"].lower(): it.get("severity", "Medium") for it in items}
+
+    def has(pattern: str) -> bool:
+        p = pattern.lower()
+        return any(p in n for n in names)
+
+    def severity_is_high(pattern: str) -> bool:
+        p = pattern.lower()
+        for n in names:
+            if p in n:
+                return severities.get(n, "").lower() == "high"
+        return False
+
+    checklist: list[tuple[str, str]] = []
+
+    # --- Baseline “creator hygiene” (always show) ---
+    checklist.append(("Clarity", "State your central claim in one sentence (then restate it in plain language)."))
+    checklist.append(("Receipts", "Add at least 1 concrete example, statistic, quote, or observable fact for each major claim."))
+
+    # --- Evidence + reasoning (score-triggered) ---
+    if score100 is not None and score100 < 65:
+        checklist.append(("Evidence", "Add one paragraph explicitly separating: facts, assumptions, and interpretation."))
+    if score100 is not None and score100 < 55:
+        checklist.append(("Structure", "Rewrite the intro so the argument steps are numbered (Premise → Premise → Conclusion)."))
+
+    # --- Fallacy/bias-triggered items (mapping rules) ---
+    if has("straw man") or has("motte") or has("false dichotomy"):
+        checklist.append(("Opposition", "Steelman the best opposing view in 2–4 sentences before you rebut it."))
+
+    if has("confirmation bias") or has("cherry-picking") or has("availability"):
+        checklist.append(("Balance", "Add one disconfirming datapoint (or limitation) and explain why it doesn’t overturn your conclusion."))
+
+    if has("appeal to emotion") or has("loaded language") or has("fear"):
+        checklist.append(("Tone", "Replace 3–5 emotionally loaded phrases with neutral equivalents (keep the meaning, lower the heat)."))
+
+    if has("gish gallop") or has("flooding") or has("whataboutism"):
+        checklist.append(("Focus", "Cut to your top 3 claims; move the rest to a ‘notes’ section or a follow-up post."))
+
+    if has("appeal to authority"):
+        checklist.append(("Authority", "Cite the underlying evidence (study/data) — not just the credential/title."))
+
+    if has("false cause") or has("post hoc") or has("causal"):
+        checklist.append(("Causality", "Add one sentence stating: correlation vs causation, and what would falsify your causal claim."))
+
+    if has("in-group") or has("out-group") or has("attribution"):
+        checklist.append(("Attribution", "Replace motive claims with behavior claims; label uncertainty where you can’t infer intent."))
+
+    # --- Severity escalation (if any HIGH patterns, force 2 extra actions) ---
+    if any(it.get("severity", "").lower() == "high" for it in items):
+        checklist.append(("High-risk", "Add a ‘fair-minded disclaimer’ sentence: what your argument is NOT claiming."))
+        checklist.append(("High-risk", "Add a ‘scope boundary’ sentence: where your claim stops / doesn’t generalize."))
+
+    # --- Questions block (if present, remind creator to use it as QA) ---
+    if questions_block and len(questions_block.strip()) > 40:
+        checklist.append(("QA", "Answer the top 2 ‘Critical Thinking Questions’ in your draft before publishing."))
+
+    # Render HTML (compact)
+    rows = "\n".join(
+        f'<li><strong>{escape_html(tag)}:</strong> {escape_html(text)}</li>'
+        for tag, text in checklist[:12]  # hard cap for quick mode
+    )
+
+    return f"""
+      <section class="card">
+        <div class="section-label">Pro Quick</div>
+        <h2>Creator pre-publish checklist</h2>
+        <p class="muted">
+          Automatically generated from the patterns detected in this report. (No extra AI calls.)
+        </p>
+        <ul class="checklist">
+          {rows}
+        </ul>
+      </section>
+    """.strip()
+
+
 def build_html_report(
     source_url,
     report_id,
@@ -1054,6 +1194,7 @@ def build_html_report(
     global_report,
     grok_insights: str | None = None,
     depth: str = "full",  # "quick" or "full"
+    creator_checklist_mode: str = "none",  # "none" | "pro_quick"
 ):
     SOCIAL_HANDLES = {
         "twitter": "@mindpilotai360",  # update once you decide
@@ -1080,15 +1221,6 @@ def build_html_report(
     """
 
     # ---------- helpers ----------
-
-    def escape_html(text: str) -> str:
-        if text is None:
-            return ""
-        return (
-            text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-        )
 
     def infer_source_type(url: str) -> str:
         if not url:
@@ -1128,6 +1260,7 @@ def build_html_report(
     rationality_profile = ""
     investor_summary = ""
     questions_block = ""
+
 
     if global_report:
         raw = global_report
@@ -1425,6 +1558,13 @@ def build_html_report(
     investor_summary = _strip_internal_subheadings(investor_summary)
     questions_block = _strip_internal_subheadings(questions_block)
     global_report_clean = _strip_internal_subheadings(global_report or "")
+    creator_checklist_html = ""
+    if depth == "quick" and creator_checklist_mode == "pro_quick":
+        creator_checklist_html = build_pro_quick_creator_checklist_html(
+            master_map=master_map,
+            rationality_profile=rationality_profile,
+            questions_block=questions_block,
+        )
 
     # Clean per-chunk analyses
     cleaned_chunk_analyses = [_strip_internal_subheadings(a) for a in chunk_analyses]
@@ -2504,80 +2644,7 @@ def build_html_report(
           <div class="card-title">Creator Pre-Publish Checklist</div>
 
           <div class="card-body">
-
-            <p class="card-body-text">
-
-              If you are the one publishing this piece (article, video, newsletter, or post),
-
-              use this checklist to tighten your draft before it goes live.
-
-            </p>
-
-
-            <ul class="card-body-text" style="margin-top:0.4rem;padding-left:1.1rem;">
-
-              <li>
-
-                <strong>Headline &amp; opener:</strong>
-
-                Does your title or hook accurately reflect the substance of the piece,
-
-                or is it leaning on exaggeration, fear, or outrage just to get clicks?
-
-              </li>
-
-              <li>
-
-                <strong>Claims vs. evidence:</strong>
-
-                For your 2–3 core claims, have you clearly shown what evidence supports them?
-
-                Would a skeptical reader understand <em>why</em> you believe each claim is true?
-
-              </li>
-
-              <li>
-
-                <strong>Counter-arguments:</strong>
-
-                Have you acknowledged the strongest reasonable objections or alternative views,
-
-                and either addressed them or clearly scoped what you’re <em>not</em> claiming?
-
-              </li>
-
-              <li>
-
-                <strong>Language intensity:</strong>
-
-                Are you using loaded or absolute language ("always", "never", "everyone")
-
-                where more precise wording would tell the truth without inflaming emotions?
-
-              </li>
-
-              <li>
-
-                <strong>Audience autonomy:</strong>
-
-                Are you giving your audience enough context, nuance, and uncertainty
-
-                to make up their own mind, or are you steering them toward a single permitted conclusion?
-
-              </li>
-
-            </ul>
-
-
-            <p class="card-body-text" style="margin-top:0.6rem;">
-
-              You don’t need to remove all emotion or persuasion to publish responsibly.
-
-              The goal is to make your reasoning <strong>transparent</strong> so a thoughtful
-
-              reader can see what you’re doing and decide whether they agree.
-
-            </p>
+            {creator_checklist_html if creator_checklist_html else ""}
 
           </div>
 

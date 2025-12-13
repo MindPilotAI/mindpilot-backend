@@ -489,6 +489,7 @@ def run_quick_analysis_from_document(
     file_bytes: bytes,
     filename: str = "",
     include_grok: bool = False,
+    creator_checklist_mode: str = "none"
 ) -> str:
     """
     Quick-mode pipeline for uploaded documents.
@@ -500,6 +501,7 @@ def run_quick_analysis_from_document(
         raw_text=text,
         source_label=filename or "Uploaded document",
         include_grok=include_grok,
+        creator_checklist_mode=creator_checklist_mode,
     )
 
 
@@ -516,36 +518,9 @@ def run_quick_analysis_from_text(
     raw_text: str,
     source_label: str = "Pasted text",
     include_grok: bool = False,
+    creator_checklist_mode: str = "none",  # <-- add this
 ) -> str:
-    """
-    Quick mode for arbitrary text:
-    - one global scan
-    - no chunk-level deep dive
-    - Grok disabled by default (1 OpenAI call only)
-    """
-    transcript_text = raw_text.strip()
-    if not transcript_text:
-        raise ValueError("No text provided for analysis (quick mode).")
-
-    quick_prompt = build_quick_global_prompt(transcript_text)
-    quick_global_report = run_mindpilot_analysis(quick_prompt)
-
-    # Optional Grok enrichment (default off for cost)
-    grok_insights = ""
-    if include_grok:
-        label = source_label or "Pasted text"
-        try:
-            grok_insights = run_grok_enrichment(label, quick_global_report)
-        except Exception as e:
-            logging.warning(f"[Quick] Grok enrichment failed: {e}")
-            grok_insights = ""
-
-    # Use the same HTML template; no chunk cards, just global overview.
-    report_id = generate_report_id(
-        source_label=source_label or "Pasted text",
-        source_url=None,
-    )
-
+    ...
     html = build_html_report(
         source_url=source_label or "Pasted text",
         report_id=report_id,
@@ -553,13 +528,17 @@ def run_quick_analysis_from_text(
         chunk_analyses=[],
         global_report=quick_global_report,
         grok_insights=grok_insights,
+        depth="quick",  # <-- IMPORTANT FIX
+        creator_checklist_mode=creator_checklist_mode,  # <-- pass through
     )
     return html
+
 
 
 def run_quick_analysis_from_youtube(
     youtube_url: str,
     include_grok: bool = False,
+    creator_checklist_mode: str = "none",
 ) -> str:
     """
     Quick mode for YouTube:
@@ -575,12 +554,14 @@ def run_quick_analysis_from_youtube(
         raw_text=transcript_text,
         source_label=youtube_url,
         include_grok=include_grok,
+        creator_checklist_mode=creator_checklist_mode,
     )
 
 
 def run_quick_analysis_from_article(
     article_url: str,
     include_grok: bool = False,
+    creator_checklist_mode: str = "none",
 ) -> str:
     """
     Quick mode for article URLs.
@@ -590,6 +571,7 @@ def run_quick_analysis_from_article(
         raw_text=article_text,
         source_label=article_url,
         include_grok=include_grok,
+        creator_checklist_mode=creator_checklist_mode,
     )
 
 AD_PHRASES = [

@@ -693,7 +693,7 @@ async def analyze(
         hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:64] if client_ip else None
     )
     settings = resolve_tier_settings(current_user)
-    
+
     # Normalise depth
     depth = (depth or "full").lower().strip()
     if depth not in ("quick", "full"):
@@ -728,10 +728,13 @@ async def analyze(
             raw_bytes = await file.read()
 
             if depth == "quick":
+                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_document(
                     file_bytes=raw_bytes,
                     filename=filename,
                     include_grok=settings["include_grok_quick"],
+                    creator_checklist_mode=checklist_mode,
                 )
             else:
                 html_report = run_full_analysis_from_document(
@@ -751,9 +754,12 @@ async def analyze(
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
 
             if depth == "quick":
+                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_youtube(
                     youtube_url,
                     include_grok=settings["include_grok_quick"],
+                    creator_checklist_mode=checklist_mode,
                 )
             else:
                 if not settings["allow_full"]:
@@ -797,10 +803,13 @@ async def analyze(
             )
 
             if depth == "quick":
+                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_text(
                     raw_text=input_value,
                     source_label=source_label_for_id,
                     include_grok=settings["include_grok_quick"],
+                    creator_checklist_mode=checklist_mode,
                 )
             else:
                 if not settings["allow_full"]:
@@ -841,9 +850,12 @@ async def analyze(
                 )
 
             if depth == "quick":
+                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_article(
                     effective_url,
                     include_grok=settings["include_grok_quick"],
+                    creator_checklist_mode=checklist_mode,
                 )
             else:
                 # Gate full reports by plan
