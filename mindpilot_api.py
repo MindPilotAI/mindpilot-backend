@@ -29,9 +29,9 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 
 from mindpilot_engine import (
-    run_full_analysis_from_youtube,
-    run_full_analysis_from_text,
-    run_full_analysis_from_article,
+    fetch_youtube_transcript,
+    fetch_article_text,
+    run_analysis_from_transcript,
     run_quick_analysis_from_youtube,
     run_quick_analysis_from_text,
     run_quick_analysis_from_article,
@@ -60,6 +60,48 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")  # optional
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+##  this gives one knob-board for cost parity and makes later pricing changes trivial.
+
+def resolve_tier_settings(current_user: Optional[dict]) -> dict:
+    plan = (current_user.get("plan") if current_user else "free") or "free"
+    plan = plan.lower().strip()
+
+    if plan in ("admin", "superuser"):
+        return dict(
+            plan=plan,
+            include_grok_quick=True,
+            include_grok_full=True,
+            allow_full=True,
+            allow_section_deep_dive=True,
+            max_chunks_full=999,
+            openai_model_quick="gpt-4o-mini",
+            openai_model_full="gpt-4o-mini",
+        )
+
+    if plan in ("pro", "creator", "pro_creator"):
+        return dict(
+            plan=plan,
+            include_grok_quick=True,     # key differentiator
+            include_grok_full=True,
+            allow_full=True,
+            allow_section_deep_dive=False,   # default OFF (cost), can be Pro+ later
+            max_chunks_full=12,              # or whatever you decide
+            openai_model_quick="gpt-4o-mini",
+            openai_model_full="gpt-4o-mini",
+        )
+
+    # free / anon
+    return dict(
+        plan="free",
+        include_grok_quick=False,
+        include_grok_full=False,
+        allow_full=False,
+        allow_section_deep_dive=False,
+        max_chunks_full=0,
+        openai_model_quick="gpt-4o-mini",
+        openai_model_full="gpt-4o-mini",
+    )
 
 
 # -------------------------------------------------------------------
@@ -615,6 +657,7 @@ async def test_grok():
         "database_ok": db_ok,
     }
 
+
 # -------------------------------------------------------------------
 # MAIN ANALYSIS ENDPOINT
 # -------------------------------------------------------------------
@@ -649,11 +692,14 @@ async def analyze(
     ip_hash = (
         hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:64] if client_ip else None
     )
-
+    settings = resolve_tier_settings(current_user)
+    
     # Normalise depth
     depth = (depth or "full").lower().strip()
     if depth not in ("quick", "full"):
         depth = "full"
+
+
 
     include_marketing_cta_flag = str(include_marketing_cta or "0").lower() in (
         "1",
@@ -685,7 +731,7 @@ async def analyze(
                 html_report = run_quick_analysis_from_document(
                     file_bytes=raw_bytes,
                     filename=filename,
-                    include_grok=False,
+                    include_grok=settings["include_grok_quick"],
                 )
             else:
                 html_report = run_full_analysis_from_document(
@@ -702,17 +748,31 @@ async def analyze(
             source_label_for_id = youtube_url
             source_type_for_logs = "youtube"
 
-            logging.info(
-                f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}"
-            )
+            logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
 
             if depth == "quick":
                 html_report = run_quick_analysis_from_youtube(
                     youtube_url,
-                    include_grok=False,
+                    include_grok=settings["include_grok_quick"],
                 )
             else:
-                html_report = run_full_analysis_from_youtube(youtube_url)
+                if not settings["allow_full"]:
+                    return PlainTextResponse(
+                        "Full Creator Reports are available on the Pro plan. Run a Quick Scan, or upgrade to unlock full reports.",
+                        status_code=402,
+                    )
+
+                transcript_text, video_id = fetch_youtube_transcript(youtube_url)
+
+                html_report = run_analysis_from_transcript(
+                    transcript_text=transcript_text,
+                    source_label=youtube_url,
+                    youtube_url=youtube_url,
+                    video_id=video_id,
+                    include_grok=settings["include_grok_full"],
+                    allow_section_deep_dive=settings["allow_section_deep_dive"],
+                    max_chunks=settings["max_chunks_full"] if settings["max_chunks_full"] else None,
+                )
 
             source_url_for_db = youtube_url
             source_label_for_db = youtube_url
@@ -740,12 +800,23 @@ async def analyze(
                 html_report = run_quick_analysis_from_text(
                     raw_text=input_value,
                     source_label=source_label_for_id,
-                    include_grok=False,
+                    include_grok=settings["include_grok_quick"],
                 )
             else:
-                html_report = run_full_analysis_from_text(
-                    raw_text=input_value,
+                if not settings["allow_full"]:
+                    return PlainTextResponse(
+                        "Full Creator Reports are available on the Pro plan. Run a Quick Scan, or upgrade to unlock full reports.",
+                        status_code=402,
+                    )
+                text_value = (input_value or "").strip()
+                if not text_value:
+                    return PlainTextResponse("Please paste text to analyze.", status_code=400)
+                html_report = run_analysis_from_transcript(
+                    transcript_text=text_value,
                     source_label=source_label_for_id,
+                    include_grok=settings["include_grok_full"],
+                    allow_section_deep_dive=settings["allow_section_deep_dive"],
+                    max_chunks=settings["max_chunks_full"] if settings["max_chunks_full"] else None,
                 )
 
             source_url_for_db = article_url
@@ -772,10 +843,29 @@ async def analyze(
             if depth == "quick":
                 html_report = run_quick_analysis_from_article(
                     effective_url,
-                    include_grok=False,
+                    include_grok=settings["include_grok_quick"],
                 )
             else:
-                html_report = run_full_analysis_from_article(effective_url)
+                # Gate full reports by plan
+                if not settings["allow_full"]:
+                    return PlainTextResponse(
+                        "Full Creator Reports are available on the Pro plan. "
+                        "Run a Quick Scan, or upgrade to unlock full reports.",
+                        status_code=402,
+                    )
+
+                # Fetch article text (engine helper)
+                article_text = fetch_article_text(effective_url)
+
+                # Run new-plan full creator report (single-pass by default)
+                html_report = run_analysis_from_transcript(
+                    transcript_text=article_text,
+                    source_label=source_label_for_id,
+                    youtube_url=None,
+                    include_grok=settings["include_grok_full"],
+                    allow_section_deep_dive=settings["allow_section_deep_dive"],
+                    max_chunks=settings["max_chunks_full"] if settings["max_chunks_full"] else None,
+                )
 
             source_url_for_db = effective_url
             source_label_for_db = source_label_for_id

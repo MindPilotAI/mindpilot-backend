@@ -145,38 +145,106 @@ and in this order. KEEP EACH SECTION SHORTER THAN THE FULL VERSION:
   to think more clearly about this content.
 """.strip()
 
+def build_full_creator_global_prompt(transcript_text: str) -> str:
+    """
+    Full Creator Report (new plan): single-pass global analysis.
+    No chunk-by-chunk deep dive unless explicitly enabled.
+    Uses the SAME top-level headings as full reports so HTML parsing stays stable.
+    """
+    return f"""
+You are MindPilot, a neutral reasoning-analysis copilot built for credibility-exposed creators.
+
+You will analyze the following content in ONE global pass (full creator report mode).
+Focus on argument structure, framing risk, interpretability, and reasoning quality.
+Do NOT fact-check the piece. Do NOT take ideological sides.
+
+CONTENT BEGIN
+----------------
+{transcript_text}
+----------------
+CONTENT END
+
+Return a report in Markdown with EXACTLY these numbered headings and in this order:
+
+# 1. Full-Lesson Reasoning Summary
+- 3–7 short paragraphs: what the argument is, how it is built, and where it is strongest/weakest.
+
+# 2. Master Fallacy & Bias Map
+- The most important patterns only (aim for ~8–16 total across fallacies/biases/rhetoric).
+- Use a compact bullet format and include severity tags (Low/Med/High) when clear.
+
+# 3. Rationality Profile for the Entire Segment
+- Strengths paragraph
+- Weaknesses paragraph
+- Then 6–10 dimensions (Evidence, Causal reasoning, Emotional framing, Fairness/balance, etc.) scored 1–5.
+- At the very end of this section, add a standalone line in this exact format:
+  "Overall reasoning score: NN/100"
+
+# 4. Condensed Investor-Facing Summary
+- 3–6 short paragraphs describing what MindPilot found and why it matters.
+- Keep it grounded and non-hype.
+
+# 5. Critical Thinking Questions to Ask Yourself
+- 6–12 questions, neutral and practical.
+""".strip()
+
 def run_analysis_from_transcript(
     transcript_text: str,
     source_label: str = "",
     youtube_url: str | None = None,
     video_id: str | None = None,
+    include_grok: bool = True,
+    allow_section_deep_dive: bool = True,
+    max_chunks: int | None = None,
 ) -> str:
     """
-    Core engine: given transcript text, run chunk-level and global analysis,
-    and return the final HTML report as a string.
+    Core engine (updated to the new plan):
+    - Full Creator Report can run as a single-pass global analysis (no chunk cards)
+    - Section-level deep dive (chunk-by-chunk) is optional + capped
+    - Grok enrichment is optional
     """
-    # 1) Chunk
-    chunks = chunk_text(transcript_text, MAX_CHARS_PER_CHUNK)
-    total_chunks = len(chunks)
+    transcript_text = (transcript_text or "").strip()
+    if not transcript_text:
+        raise ValueError("No text provided for analysis.")
 
-    # 2) Per-chunk analysis
     chunk_analyses: List[str] = []
-    for idx, chunk in enumerate(chunks):
-        chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
-        analysis = run_mindpilot_analysis(chunk_prompt)
-        chunk_analyses.append(analysis)
+    total_chunks = 0
 
-    # 3) Global summary
-    global_prompt = build_global_summary_prompt(chunk_analyses)
-    global_report = run_mindpilot_analysis(global_prompt)
+    # 1) Optional section-level deep dive (chunking)
+    if allow_section_deep_dive:
+        chunks = chunk_text(transcript_text, MAX_CHARS_PER_CHUNK)
 
-    # 3b) Optional Grok enrichment
-    grok_label = source_label or (youtube_url or "Pasted content")
-    try:
-        grok_insights = run_grok_enrichment(grok_label, global_report)
-    except Exception as e:
-        logging.warning(f"Grok enrichment failed: {e}")
-        grok_insights = ""
+        # Cap chunks for cost safety
+        if max_chunks is not None and max_chunks > 0:
+            chunks = chunks[:max_chunks]
+
+        total_chunks = len(chunks)
+
+        for idx, chunk in enumerate(chunks):
+            chunk_prompt = build_chunk_prompt(chunk, idx, total_chunks)
+            analysis = run_mindpilot_analysis(chunk_prompt)
+            chunk_analyses.append(analysis)
+
+        # Global summary built from chunk analyses (legacy full)
+        global_prompt = build_global_summary_prompt(chunk_analyses)
+        global_report = run_mindpilot_analysis(global_prompt)
+        depth_label = "full"
+
+    else:
+        # 2) New plan full creator report: single global pass, no chunk cards
+        global_prompt = build_full_creator_global_prompt(transcript_text)
+        global_report = run_mindpilot_analysis(global_prompt)
+        depth_label = "full"  # still "full", but without deep dive cards
+
+    # 3) Optional Grok enrichment
+    grok_insights = ""
+    if include_grok:
+        grok_label = source_label or (youtube_url or "Pasted content")
+        try:
+            grok_insights = run_grok_enrichment(grok_label, global_report)
+        except Exception as e:
+            logging.warning(f"Grok enrichment failed: {e}")
+            grok_insights = ""
 
     # 4) Build HTML
     report_id = generate_report_id(
@@ -191,10 +259,19 @@ def run_analysis_from_transcript(
         chunk_analyses=chunk_analyses,
         global_report=global_report,
         grok_insights=grok_insights,
-        depth="full",
+        depth=depth_label,
     )
 
     return final_html
+def fetch_youtube_transcript(youtube_url: str) -> tuple[str, str]:
+    """
+    Fetch and clean YouTube transcript text for a URL.
+    Returns (transcript_text, video_id).
+    """
+    video_id = extract_video_id(youtube_url)
+    transcript_text = fetch_transcript_text(video_id)
+    transcript_text = clean_transcript_text(transcript_text)
+    return transcript_text, video_id
 
 
 def run_full_analysis_from_youtube(youtube_url: str) -> str:
@@ -240,7 +317,11 @@ def run_full_analysis_from_youtube(youtube_url: str) -> str:
         source_label=youtube_url,
         youtube_url=youtube_url,
         video_id=video_id,
+        include_grok=True,  # default; API will override if needed
+        allow_section_deep_dive=True,  # default; API will override if needed
+        max_chunks=None,  # default; API will override if needed
     )
+
 
 def run_full_analysis_from_text(raw_text: str, source_label: str = "Pasted text") -> str:
     """
@@ -254,7 +335,11 @@ def run_full_analysis_from_text(raw_text: str, source_label: str = "Pasted text"
     return run_analysis_from_transcript(
         transcript_text=transcript_text,
         source_label=source_label,
+        include_grok=True,
+        allow_section_deep_dive=True,
+        max_chunks=None,
     )
+
 
 def fetch_article_text(url: str) -> str:
     """
