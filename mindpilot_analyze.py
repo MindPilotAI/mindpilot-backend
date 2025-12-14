@@ -1555,7 +1555,7 @@ def build_html_report(
                 q = q[:137].rstrip() + "…"
             selected.append(q)
 
-        return " · ".join(selected)
+        return "\n".join(selected)
 
     # Clean global sections
     full_summary = _strip_internal_subheadings(full_summary)
@@ -2224,6 +2224,18 @@ def build_html_report(
       min-width: 2.5rem;
       text-align: right;
     }}
+    .instruction-block{{
+      border-left: 6px solid var(--accent-warn);
+      background: rgba(229, 62, 62, 0.06);
+      padding: 0.85rem 1rem;
+      border-radius: 0.9rem;
+    }}
+    .instruction-block .card-title{{
+      color: var(--dark-navy);
+    }}
+    .instruction-block .card-body{{
+      color: var(--text-main);
+    }}
     .social-snippet {{
       margin-top: 0.6rem;
       margin-bottom: 0.6rem;
@@ -2251,7 +2263,6 @@ def build_html_report(
         background: radial-gradient(circle at top left, #0B1B33, #1A365D);
         color: #E2E8F0;
       }}
-
       .social-header {{
         display: flex;
         align-items: center;
@@ -2259,7 +2270,6 @@ def build_html_report(
         gap: 0.75rem;
         margin-bottom: 0.6rem;
       }}
-
       .social-title {{
         font-size: 0.88rem;
         font-weight: 600;
@@ -2621,56 +2631,41 @@ def build_html_report(
     </section>
     """
 
+    # ---------- Disclaimer + Creator checklist ----------
 
-    # ---------- Disclaimer + Creator checklist (always shown) ----------
-
+    # 1) Instruction card (always shown)
     html += """
-
-        <section class="card-sub">
-          <div class="instruction-block">
+      <section class="card-sub">
+        <div class="instruction-block">
           <div class="card-title">How to read this report</div>
-
           <div class="card-body">
-
             MindPilot is your critical thinking co-pilot. This analysis highlights patterns in
-
             reasoning—such as logical fallacies, cognitive biases, and attempts to persuade—
-
             so you can reflect more deliberately on what you’re hearing or reading.
-
             <br/><br/>
-
             <strong>Important:</strong> MindPilot does <em>not</em> act as a fact checker and does
-
             <em>not</em> independently verify whether specific claims or statements are true.
-
             It focuses on <strong>how</strong> arguments are made, not on adjudicating the
-
             real-world accuracy of every assertion.
             <br/><br/>
             <strong>Note on Quick vs. Full Report:</strong> MindPilot runs a single global scan in
-            
-            quick mode.  In full mode, it also runs section-level diagnostics, so scores may shift
-            
+            quick mode. In full mode, it also runs section-level diagnostics, so scores may shift
             slightly within a small tolerance as the system "thinks harder" about the reasoning.
           </div>
-          </div>
-
-        </section>
-
-
-        <section class="card-sub">
-
-          <div class="card-title">Creator Pre-Publish Checklist</div>
-
-          <div class="card-body">
-            html += creator_checklist_html
-
-          </div>
-
-        </section>
-
+        </div>
+      </section>
     """
+
+    # 2) Creator checklist (only if generated / enabled)
+    if creator_checklist_html:
+        html += f"""
+          <section class="card-sub">
+            <div class="card-title">Creator Pre-Publish Checklist</div>
+            <div class="card-body">
+              {creator_checklist_html}
+            </div>
+          </section>
+        """
 
     # ---------- Section-level deep dive ----------
 
