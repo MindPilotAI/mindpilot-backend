@@ -1,4 +1,4 @@
-# mindpilot_api.py  — CLEAN VERSION (bcrypt + PyJWT + psycopg2)
+# mindpilot_api.py  — CLEAN VERSION
 import base64
 import hmac
 import secrets

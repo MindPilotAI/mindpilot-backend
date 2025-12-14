@@ -1,9 +1,7 @@
 # mindpilot_engine.py
 import re
 from typing import List
-
 import logging
-
 import httpx
 import io
 from mindpilot_analyze import (

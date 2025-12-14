@@ -1325,7 +1325,7 @@ def build_html_report(
         block = re.sub(r"\n{3,}", "\n\n", block)
         return block.strip()
 
-    def build_fallacy_table(raw_map: str) -> str:
+    def build_fallacy_table(raw_map: str, depth: str = "full") -> str:
         """
         Parse the markdown-style Master Fallacy & Bias Map into an HTML table.
 
@@ -1425,7 +1425,11 @@ def build_html_report(
 
         # ---------- Build HTML ----------
         body_rows: list[str] = []
-        for category, name, desc, severity in rows:
+        display_rows = rows
+        if depth == "quick":
+            display_rows = rows[:5]
+
+        for category, name, desc, severity in display_rows:
             sev_class = (
                 f"severity-{severity.lower()}" if severity else "severity-none"
             )
@@ -1435,8 +1439,10 @@ def build_html_report(
                 <td class="fallacy-type col-type">{escape_html(category)}</td>
                 <td class="fallacy-name col-name">{escape_html(name)}</td>
                 <td class="fallacy-desc col-desc">{escape_html(desc)}</td>
-                <td class="fallacy-severity col-sev {sev_class}">
-                  {escape_html(severity)}
+                <td class="fallacy-severity col-sev">
+                  <span class="fallacy-tag {severity.lower() if severity else ''}">
+                    {escape_html(severity)}
+                  </span>
                 </td>
               </tr>
                 """
@@ -1557,6 +1563,13 @@ def build_html_report(
     rationality_profile = _strip_internal_subheadings(rationality_profile)
     investor_summary = _strip_internal_subheadings(investor_summary)
     questions_block = _strip_internal_subheadings(questions_block)
+    # In quick mode, reduce questions to 2 concise prompts
+    if depth == "quick" and questions_block:
+        condensed = summarize_questions_for_social(questions_block)
+        if condensed:
+            questions_block = "\n".join(
+                f"- {q.strip()}" for q in condensed.split(" · ")
+            )
     global_report_clean = _strip_internal_subheadings(global_report or "")
     creator_checklist_html = ""
     if depth == "quick" and creator_checklist_mode == "pro_quick":
@@ -1959,6 +1972,10 @@ def build_html_report(
       color: var(--text-muted);
       line-height: 1.5;
     }}
+    .card-instruction {{
+    border-left: 4px solid #CBD5F5;
+    background: #F8FAFF;
+    }}
     .fallacy-table-wrapper {{
       margin-top: 0.5rem;
       overflow-x: auto;
@@ -2075,7 +2092,7 @@ def build_html_report(
       font-weight: 600;
       color: var(--dark-navy);
     }}
-         .chunk-toggle {{
+    .chunk-toggle {{
        font-size: 0.78rem;
        color: var(--text-muted);
        padding: 0.08rem 0.55rem;
@@ -2145,6 +2162,10 @@ def build_html_report(
     .collapsible-toggle {{
       font-size: 0.8rem;
       color: var(--text-muted);
+    }}
+    .quick-questions {{
+      font-size: 0.85rem;
+      opacity: 0.9;
     }}
     .score-bar-container {{
       margin: 0.4rem 0;
@@ -2222,7 +2243,7 @@ def build_html_report(
       color: var(--text-muted);
       margin-bottom: 0.2rem;
     }}
-          .social-card {{
+    .social-card {{
         margin-top: 0.9rem;
         border-radius: 1rem;
         border: 1px solid rgba(148, 163, 184, 0.55);
@@ -2467,7 +2488,6 @@ def build_html_report(
       <div class="tagline">Your critical thinking Co-Pilot’s readback of this content.</div>
       <div class="header-meta">
         <span>{escape_html(source_type)}</span>
-        <span>· {total_chunks} section(s) analyzed</span>
         <span>· {escape_html(depth_text)}</span>
       </div>
     </header>
@@ -2644,7 +2664,7 @@ def build_html_report(
           <div class="card-title">Creator Pre-Publish Checklist</div>
 
           <div class="card-body">
-            {creator_checklist_html if creator_checklist_html else ""}
+            html += creator_checklist_html
 
           </div>
 
