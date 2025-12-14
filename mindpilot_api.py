@@ -692,7 +692,25 @@ async def analyze(
     ip_hash = (
         hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:64] if client_ip else None
     )
-    settings = resolve_tier_settings(current_user)
+    ## settings = resolve_tier_settings(current_user)
+    # --- Tier resolution (with DEV override support) --- TEMPORARY DEBUGGING
+    tier_user = current_user
+
+    plan_override = None
+    try:
+        plan_override = request.query_params.get("mp_plan")
+    except Exception:
+        plan_override = None
+
+    if (
+            plan_override
+            and os.getenv("MP_ALLOW_PLAN_OVERRIDE", "0") == "1"
+            and plan_override.lower().strip() in {"free", "pro", "admin"}
+    ):
+        tier_user = dict(current_user or {})
+        tier_user["plan"] = plan_override.lower().strip()
+
+    settings = resolve_tier_settings(tier_user)
 
     # Normalise depth
     depth = (depth or "full").lower().strip()

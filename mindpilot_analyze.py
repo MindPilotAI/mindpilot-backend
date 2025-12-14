@@ -2,6 +2,33 @@ import os
 import re
 import textwrap
 
+def clean_question_line(line: str) -> str:
+    """
+    Normalize a line that might be a bullet/numbered item into a clean question.
+    Keeps the logic centralized so it's easy to tune without regex warnings.
+    """
+    if not line:
+        return ""
+
+    s = line.strip()
+
+    # Strip common markdown-ish prefixes and list markers
+    s = re.sub(r"^[#>\s]*", "", s)          # headings/quotes/leading whitespace
+    s = re.sub(r"^[-*•]\s+", "", s)         # bullets like -, *, •
+    s = re.sub(r"^\d+[\).]\s+", "", s)      # numbering like "1. " or "1) "
+
+    s = s.strip()
+
+    # Must contain a question mark to be treated as a question
+    if "?" not in s:
+        return ""
+
+    if not s.endswith("?"):
+        s += "?"
+
+    return s
+
+
 class TranscriptUnavailableError(RuntimeError):
     """Raised when YouTube transcript is disabled or not found."""
     pass
@@ -538,8 +565,10 @@ def build_social_card_html(
         seen = set()
 
         for part in raw_parts:
-            # Remove markdown bullets, numbering, headings
-            cleaned = re.sub(r"^[#>\s*•\d().-]+", "", part).strip()
+
+            cleaned = clean_question_line(part)
+            if not cleaned:
+                continue
 
             # Must end in a "?" to count as a real question
             if "?" not in cleaned:
@@ -569,6 +598,16 @@ def build_social_card_html(
     else:
         # Fallback: show the raw snippet as a paragraph
         questions_block_html = f'<p class="social-text">{escape_html(questions_text)}</p>'
+
+    def slice_questions_by_tier(questions: list[str], tier: str, depth: str) -> list[str]:
+        if tier in ("free", "anonymous"):
+            return questions[:4]
+
+        if depth == "quick":
+            return questions[:8] if len(questions) >= 6 else questions[:6]
+
+        # full
+        return questions[:12] if len(questions) >= 8 else questions[:8]
 
     # --- Grok enrichment: collapse to a single punchy line ---
     grok_text_raw = (grok_line or "").strip()
@@ -611,10 +650,13 @@ def build_social_card_html(
         footer_left = "Full Cognitive Flight Report available in the MindPilot app."
 
     # --- Tiny fallacy table: Pattern | Severity (top 3) ---
+    # Fixed Cockpit rule: ALWAYS render the table and ALWAYS render the Severity column.
+    # If severity is unavailable (gated or missing), show a locked badge instead of blank.
     fallacy_table_html = ""
+    rows: list[tuple[str, str]] = []
+
     if fallacy_text:
         raw_items = [item.strip() for item in fallacy_text.split(";") if item.strip()]
-        rows: list[tuple[str, str]] = []
         for item in raw_items[:3]:
             pattern = item
             severity = ""
@@ -624,27 +666,40 @@ def build_social_card_html(
                 severity = tail[:-1].strip()  # drop trailing ')'
             rows.append((pattern, severity))
 
-        if rows:
-            row_html = "\n".join(
-                f"<tr><td>{escape_html(pattern)}</td>"
-                f'<td class="severity-cell">{escape_html(severity or "")}</td></tr>'
-                for pattern, severity in rows
-            )
-            fallacy_table_html = f"""
-              <table class="social-fallacy-table">
-                <thead>
-                  <tr><th>Pattern</th><th>Severity</th></tr>
-                </thead>
-                <tbody>
-                {row_html}
-                </tbody>
-              </table>
-            """.rstrip()
+    # If we got no rows at all, still render a stable 3-row placeholder
+    if not rows:
+        rows = [
+            ("Fallacy / bias signal (sample)", ""),
+            ("Framing / persuasion cue (sample)", ""),
+            ("Evidence / inference weakness (sample)", ""),
+        ]
 
-    fallacy_block_html = (
-        fallacy_table_html
-        or f'<p class="social-text">{escape_html(fallacy_text)}</p>'
+    # If NONE of the rows have severity, treat severity as locked
+    severity_locked = not any(sev.strip() for _, sev in rows)
+
+    row_html = "\n".join(
+        (
+            f"<tr><td>{escape_html(pattern)}</td>"
+            f'<td class="severity-cell">'
+            f'{escape_html(severity) if severity.strip() else locked_badge_html("Locked")}'
+            f"</td></tr>"
+        )
+        for pattern, severity in rows
     )
+
+    locked_class = " locked" if severity_locked else ""
+    fallacy_table_html = f"""
+      <table class="social-fallacy-table{locked_class}">
+        <thead>
+          <tr><th>Pattern</th><th>Severity</th></tr>
+        </thead>
+        <tbody>
+        {row_html}
+        </tbody>
+      </table>
+    """.rstrip()
+
+    fallacy_block_html = fallacy_table_html
 
     # --- Final card HTML ---
     return f"""
@@ -1184,6 +1239,9 @@ def build_pro_quick_creator_checklist_html(
         </ul>
       </section>
     """.strip()
+# single source of truth for lock badging
+def locked_badge_html(label: str = "Locked") -> str:
+    return f'<span class="locked-badge">{label}</span>'
 
 
 def build_html_report(
@@ -1563,13 +1621,101 @@ def build_html_report(
     rationality_profile = _strip_internal_subheadings(rationality_profile)
     investor_summary = _strip_internal_subheadings(investor_summary)
     questions_block = _strip_internal_subheadings(questions_block)
-    # In quick mode, reduce questions to 2 concise prompts
-    if depth == "quick" and questions_block:
-        condensed = summarize_questions_for_social(questions_block)
-        if condensed:
-            questions_block = "\n".join(
-                f"- {q.strip()}" for q in condensed.split(" · ")
-            )
+    # --- Fixed Cockpit: tier-based question slicing (Quick + Full) ---
+    # Remove the old behavior that collapsed quick questions to 1–2 items.
+
+    # Determine effective tier locally (mindpilot_analyze.py only):
+    # - quick + no pro checklist => anonymous behavior
+    # - quick + pro checklist enabled => pro_quick behavior
+    # - full => pro_full behavior
+    effective_tier = "pro_full"
+    if depth == "quick":
+        effective_tier = "pro_quick" if creator_checklist_mode == "pro_quick" else "anonymous"
+
+    def _extract_question_lines(block: str) -> list[str]:
+        if not block:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+
+        for raw in block.splitlines():
+            s = raw.strip()
+            if not s:
+                continue
+
+            # Strip bullets / numbering like "- ", "* ", "1. ", "1) "
+            s = re.sub(r"^[#>\s\-*•\d\.\)\(]+", "", s).strip()
+
+            # Only keep things that look like real questions
+            if "?" not in s:
+                continue
+            if not s.endswith("?"):
+                s += "?"
+
+            key = re.sub(r"\W+", "", s).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+
+        return out
+
+    def _defaults() -> list[str]:
+        # Neutral evergreen “stress-test” questions (used only if the model returns too few)
+        return [
+            "What would change my mind about the main claim?",
+            "What key evidence is missing or under-specified?",
+            "What alternative explanation fits the same facts?",
+            "Which assumptions does the argument rely on most?",
+            "What would a strong critic say is the weakest link?",
+            "Are there incentives shaping what’s being emphasized or omitted?",
+            "What parts are evidence versus interpretation?",
+            "What uncertainty is being presented as certainty?",
+            "What are the strongest counterexamples to the conclusion?",
+            "What testable prediction follows from this argument?",
+            "What definitions or terms are being used loosely?",
+            "What would this look like if the opposite were true?",
+        ]
+
+    def slice_questions_by_tier(questions: list[str], tier: str, depth_: str) -> list[str]:
+        # Anonymous: exactly 4
+        if tier in ("free", "anonymous"):
+            sliced = questions[:4]
+            if len(sliced) < 4:
+                for q in _defaults():
+                    if len(sliced) >= 4:
+                        break
+                    if q not in sliced:
+                        sliced.append(q)
+            return sliced[:4]
+
+        # Pro Quick: 6–8
+        if depth_ == "quick":
+            sliced = questions[:8]
+            if len(sliced) < 6:
+                for q in _defaults():
+                    if len(sliced) >= 6:
+                        break
+                    if q not in sliced:
+                        sliced.append(q)
+            return sliced[:8]
+
+        # Full: 8–12
+        sliced = questions[:12]
+        if len(sliced) < 8:
+            for q in _defaults():
+                if len(sliced) >= 8:
+                    break
+                if q not in sliced:
+                    sliced.append(q)
+        return sliced[:12]
+
+    extracted_questions = _extract_question_lines(questions_block)
+    sliced_questions = slice_questions_by_tier(extracted_questions, effective_tier, depth)
+
+    # Rebuild questions_block as markdown bullets so existing rendering stays stable
+    questions_block = "\n".join(f"- {q}" for q in sliced_questions) if sliced_questions else ""
+
     global_report_clean = _strip_internal_subheadings(global_report or "")
     creator_checklist_html = ""
     if depth == "quick" and creator_checklist_mode == "pro_quick":
@@ -1849,35 +1995,73 @@ def build_html_report(
 
     esc_canonical_snippet = escape_html(canonical_snippet)
 
-
-    # ---------- global presence flag & Grok card ----------
-
-    has_any_global = any(
-        [
-            esc_profile,
-            esc_full,
-            esc_map,
-            esc_questions,
-            esc_investor,
-            bool(esc_grok),
-        ]
-    )
+    # Grok panel — Fixed Cockpit: ALWAYS render
+    grok_locked = not bool(esc_grok)
+    grok_wrapper_class = "locked" if grok_locked else ""
 
     if esc_grok:
-        grok_card_html = f"""
-          <section class="card-sub">
-            <div class="collapsible-header" onclick="toggleSection('grok-card')">
-              <span>MindPilot × Grok Live Context &amp; Creative Debrief</span>
-              <span class="collapsible-toggle" id="toggle-grok-card">Hide</span>
-            </div>
-            <div class="collapsible-body open" id="section-grok-card">
-              <pre class="pre-block">{esc_grok}</pre>
-            </div>
-          </section>
-    """
-
+        grok_body_html = f'<pre class="pre-block">{esc_grok}</pre>'
     else:
-        grok_card_html = ""
+        grok_body_html = f"""
+          <p class="muted" style="margin:0;">
+            {locked_badge_html("Locked")} Grok context is available on Pro tiers.
+          </p>
+          <p class="muted" style="margin:0.5rem 0 0;">
+            Upgrade to unlock: live context, creative debrief, and alternate framings.
+          </p>
+        """
+
+    grok_card_html = f"""
+      <section class="card-sub {grok_wrapper_class}">
+        <div class="collapsible-header" onclick="toggleSection('grok-card')">
+          <span>Grok Context</span>
+          <span class="collapsible-toggle" id="toggle-grok-card">{"Hide" if not grok_locked else "Show"}</span>
+        </div>
+        <div class="collapsible-body {"open" if not grok_locked else ""}" id="section-grok-card">
+          {grok_body_html}
+        </div>
+      </section>
+    """
+    # ---------- Debug strip (env-controlled) ----------
+    debug_strip_html = ""
+    try:
+        import os  # safe even if already imported
+
+        if os.getenv("MP_DEBUG_UI", "0") == "1":
+            # Use locals().get(...) so missing vars never crash rendering
+            _depth = locals().get("depth", "")
+            _effective_tier = locals().get("effective_tier", "")
+            _creator_mode = locals().get("creator_checklist_mode", "")
+            _esc_grok = locals().get("esc_grok", "")
+            _questions_block = locals().get("questions_block", "")
+
+            # questions_count: prefer sliced_questions if it exists, else count bullet lines
+            _sliced = locals().get("sliced_questions", None)
+            if isinstance(_sliced, list):
+                q_count = len(_sliced)
+            else:
+                q_count = sum(
+                    1 for ln in str(_questions_block).splitlines()
+                    if ln.strip().startswith(("-", "*"))
+                )
+
+            debug_items = [
+                ("depth", str(_depth)),
+                ("effective_tier", str(_effective_tier)),
+                ("creator_checklist_mode", str(_creator_mode)),
+                ("grok_present", "yes" if bool(_esc_grok) else "no"),
+                ("questions_count", str(q_count)),
+            ]
+            debug_kv = " · ".join(f"{k}={v}" for k, v in debug_items)
+
+            debug_strip_html = f"""
+              <div class="debug-strip">
+                <strong>DEBUG</strong> — {escape_html(debug_kv)}
+              </div>
+            """
+    except Exception:
+        # Never let debug UI break report rendering
+        debug_strip_html = ""
 
     # ---------- HTML skeleton ----------
 
@@ -1915,6 +2099,15 @@ def build_html_report(
     }}
     header {{
       margin-bottom: 1.5rem;
+    }}
+    .debug-strip {{
+      margin: 0.75rem 0 0.75rem;
+      padding: 0.5rem 0.75rem;
+      border: 1px dashed #f59e0b;
+      background: #fff7ed;
+      color: #7c2d12;
+      border-radius: 0.6rem;
+      font-size: 0.78rem;
     }}
     .logo-title {{
       font-size: 1.8rem;
@@ -2488,6 +2681,33 @@ def build_html_report(
          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
        }}
      }}
+    /* ===============================
+   Locked / Gated UI (Cockpit)
+   =============================== */
+
+    .locked {{
+      opacity: 0.45;
+      filter: grayscale(0.3);
+      pointer-events: none;
+    }}
+    
+    .locked-badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: #EDF2F7;
+      border: 1px dashed var(--border-subtle);
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+    }}
+    
+    .locked-badge::before {{
+      content: "🔒";
+      font-size: 0.8rem;
+    }}
 
     </style>
 </head>
@@ -2501,6 +2721,7 @@ def build_html_report(
         <span>· {escape_html(depth_text)}</span>
       </div>
     </header>
+    {debug_strip_html}
         <section class="card-sub">
       <div class="card-title">Source & analysis mode</div>
       <div class="card-body">
@@ -2518,6 +2739,22 @@ def build_html_report(
     </section>
 
 """
+    # ---------- global presence flag ----------
+    # Fixed Cockpit: Quick report must always render the global container,
+    # even if some sections are empty/locked.
+    has_any_global = any(
+        [
+            esc_profile,
+            esc_full,
+            esc_map,
+            esc_questions,
+            esc_investor,
+        ]
+    )
+
+    if depth == "quick":
+        has_any_global = True
+
     # ---------- Global card + subcards ----------
     if has_any_global:
         html += f"""
@@ -2540,66 +2777,136 @@ def build_html_report(
         </div>
       </section>
       """
-        # 2) Critical Thinking Questions – show by default
+            # 2) Critical Thinking Questions — Fixed Cockpit: ALWAYS render
         if esc_questions:
-            html += f"""
-      <section class="card-sub">
-        <div class="collapsible-header" onclick="toggleSection('critical-questions')">
-          <span>Critical Thinking Questions to Ask Yourself</span>
-          <span class="collapsible-toggle" id="toggle-critical-questions">Hide</span>
-        </div>
-        <div class="collapsible-body open" id="section-critical-questions">
-          <pre class="pre-block">{esc_questions}</pre>
-        </div>
-      </section>
-      """
+            questions_body_html = f'<pre class="pre-block">{esc_questions}</pre>'
+            questions_locked_class = ""
+            questions_badge_html = ""
+        else:
+            # Should be rare now that slicing fills defaults, but keep cockpit stable
+            questions_body_html = """
+                <p class="muted" style="margin:0;">
+                  Questions will appear here when available.
+                </p>
+              """
+            questions_locked_class = "locked"
+            questions_badge_html = locked_badge_html("Locked")
+
+        html += f"""
+        <section class="card-sub {questions_locked_class}">
+          <div class="collapsible-header" onclick="toggleSection('critical-questions')">
+            <span>Critical Thinking Questions to Ask Yourself</span>
+            <span class="collapsible-toggle" id="toggle-critical-questions">Hide</span>
+          </div>
+          <div class="collapsible-body open" id="section-critical-questions">
+            {questions_badge_html}
+            {questions_body_html}
+          </div>
+        </section>
+        """
 
         # 3) MindPilot × Grok (if present) – we render this card next
         html += grok_card_html
 
+        # 3b) Global fallback (when we have a global report but no structured full summary)
+        if esc_global_fallback and not esc_full:
+            html += f"""
+          <section class="card-sub">
+            <div class="collapsible-header" onclick="toggleSection('global-fallback')">
+              <span>Global MindPilot Reasoning Overview</span>
+              <span class="collapsible-toggle" id="toggle-global-fallback">Show</span>
+            </div>
+            <div class="collapsible-body" id="section-global-fallback">
+              <pre class="pre-block">{esc_global_fallback}</pre>
+            </div>
+          </section>
+            """
+
         # 4) Full Reasoning Scan + Master Map (full mode only)
         if depth == "full":
+            # 4) Full Reasoning Scan – Global Summary (Full cockpit: ALWAYS render)
             if esc_full:
-                html += f"""
-      <section class="card-sub">
-        <div class="collapsible-header" onclick="toggleSection('global-summary')">
-          <span>Full Reasoning Scan – Global Summary</span>
-          <span class="collapsible-toggle" id="toggle-global-summary">Show</span>
-        </div>
-        <div class="collapsible-body" id="section-global-summary">
-          <pre class="pre-block">{esc_full}</pre>
-        </div>
-      </section>
-      """
-        # 5) Master Fallacy & Bias Map
-            if esc_map:
-                html += f"""
-      <section class="card-sub">
-        <div class="collapsible-header" onclick="toggleSection('master-map')">
-          <span>Master Fallacy &amp; Bias Map</span>
-          <span class="collapsible-toggle" id="toggle-master-map">Hide</span>
-        </div>
-        <div class="collapsible-body open" id="section-master-map">
-          {fallacy_table_html or f'<pre class="pre-block">{esc_map}</pre>'}
-        </div>
-      </section>
-      """
+                full_body = f'<pre class="pre-block">{esc_full}</pre>'
+                full_class = ""
+                full_badge = ""
+            else:
+                full_body = f"""
+                  <p class="muted" style="margin:0;">
+                    {locked_badge_html("Locked")} Full Reasoning Scan is available on Pro Full tiers.
+                  </p>
+                """
+                full_class = "locked"
+                full_badge = ""
 
-        # 6) Condensed Executive Summary
-        if esc_investor:
             html += f"""
-      <section class="card-sub">
-        <div class="collapsible-header" onclick="toggleSection('investor-summary')">
-          <span>Condensed Executive Summary</span>
-          <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
-        </div>
-        <div class="collapsible-body" id="section-investor-summary">
-          <pre class="pre-block">{esc_investor}</pre>
-        </div>
-      </section>
-      """
+              <section class="card-sub {full_class}">
+                <div class="collapsible-header" onclick="toggleSection('global-summary')">
+                  <span>Full Reasoning Scan – Global Summary</span>
+                  <span class="collapsible-toggle" id="toggle-global-summary">{"Show" if full_class else "Hide"}</span>
+                </div>
+                <div class="collapsible-body {"open" if not full_class else ""}" id="section-global-summary">
+                  {full_badge}
+                  {full_body}
+                </div>
+              </section>
+            """
 
-            # 7) Social snippet – single canonical template for all platforms
+            # 5) Master Fallacy & Bias Map (Full cockpit: ALWAYS render)
+            if esc_map or fallacy_table_html:
+                map_body = (fallacy_table_html or f'<pre class="pre-block">{esc_map}</pre>')
+                map_class = ""
+                map_badge = ""
+            else:
+                map_body = f"""
+                  <p class="muted" style="margin:0;">
+                    {locked_badge_html("Locked")} Master Map is available on Pro Full tiers.
+                  </p>
+                """
+                map_class = "locked"
+                map_badge = ""
+
+            html += f"""
+              <section class="card-sub {map_class}">
+                <div class="collapsible-header" onclick="toggleSection('master-map')">
+                  <span>Master Fallacy &amp; Bias Map</span>
+                  <span class="collapsible-toggle" id="toggle-master-map">{"Show" if map_class else "Hide"}</span>
+                </div>
+                <div class="collapsible-body {"open" if not map_class else ""}" id="section-master-map">
+                  {map_badge}
+                  {map_body}
+                </div>
+              </section>
+            """
+
+        # 6) Condensed Executive Summary — Full cockpit: ALWAYS render (locked if gated/empty)
+        exec_locked = not bool(esc_investor)
+        exec_wrapper_class = "locked" if exec_locked else ""
+
+        if esc_investor:
+            exec_body_html = f'<pre class="pre-block">{esc_investor}</pre>'
+        else:
+            exec_body_html = f"""
+              <p class="muted" style="margin:0;">
+                {locked_badge_html("Locked")} Condensed Executive Summary is available on Pro Full tiers.
+              </p>
+              <p class="muted" style="margin:0.5rem 0 0;">
+                Upgrade to unlock the executive summary view.
+              </p>
+            """
+
+        html += f"""
+          <section class="card-sub {exec_wrapper_class}">
+            <div class="collapsible-header" onclick="toggleSection('investor-summary')">
+              <span>Condensed Executive Summary</span>
+              <span class="collapsible-toggle" id="toggle-investor-summary">Show</span>
+            </div>
+            <div class="collapsible-body" id="section-investor-summary">
+              {exec_body_html}
+            </div>
+          </section>
+        """
+
+        # 7) Social snippet – single canonical template for all platforms
         html += f"""
         <section class="card-sub">
           <div class="collapsible-header" onclick="toggleSection('social-snippets')">
@@ -2619,17 +2926,6 @@ def build_html_report(
           </div>
         </section>
         """
-
-
-    elif esc_global_fallback:
-        html += f"""
-    <section class="card">
-      <div class="card-title">Global MindPilot Reasoning Overview</div>
-      <div class="card-body">
-        <pre class="pre-block">{esc_global_fallback}</pre>
-      </div>
-    </section>
-    """
 
     # ---------- Disclaimer + Creator checklist ----------
 
@@ -2656,16 +2952,34 @@ def build_html_report(
       </section>
     """
 
-    # 2) Creator checklist (only if generated / enabled)
+    # --- Creator Pre-Publish Checklist (always render) ---
+    # Locked unless we actually have the Pro Quick checklist HTML (Fixed Cockpit)
+    checklist_locked = not bool(creator_checklist_html)
+
     if creator_checklist_html:
-        html += f"""
-          <section class="card-sub">
-            <div class="card-title">Creator Pre-Publish Checklist</div>
-            <div class="card-body">
-              {creator_checklist_html}
-            </div>
-          </section>
+        checklist_body = creator_checklist_html
+    else:
+        checklist_body = """
+        <ul>
+          <li>Are claims clearly distinguished from opinions?</li>
+          <li>Are key assumptions stated explicitly?</li>
+          <li>Would a skeptical reader understand your reasoning?</li>
+        </ul>
         """
+
+    checklist_wrapper_class = "locked" if checklist_locked else ""
+
+    creator_checklist_section = f"""
+    <section class="card {checklist_wrapper_class}">
+      <h3>
+        Creator Pre-Publish Checklist
+        {locked_badge_html("Locked") if checklist_locked else ""}
+      </h3>
+      {checklist_body}
+    </section>
+    """.strip()
+
+    sections.append(creator_checklist_section)
 
     # ---------- Section-level deep dive ----------
 
