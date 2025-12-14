@@ -726,10 +726,10 @@ async def analyze(
             )
 
             raw_bytes = await file.read()
-
+            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                 "superuser") else "none"
             if depth == "quick":
-                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                     "superuser") else "none"
+
                 html_report = run_quick_analysis_from_document(
                     file_bytes=raw_bytes,
                     filename=filename,
@@ -752,10 +752,9 @@ async def analyze(
             source_type_for_logs = "youtube"
 
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
-
+            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                 "superuser") else "none"
             if depth == "quick":
-                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_youtube(
                     youtube_url,
                     include_grok=settings["include_grok_quick"],
@@ -801,10 +800,10 @@ async def analyze(
             logging.info(
                 f"[MindPilot] Running {depth} TEXT analysis (label={source_label_for_id!r})."
             )
-
+            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                 "superuser") else "none"
             if depth == "quick":
-                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                     "superuser") else "none"
+
                 html_report = run_quick_analysis_from_text(
                     raw_text=input_value,
                     source_label=source_label_for_id,
@@ -848,10 +847,9 @@ async def analyze(
                 return PlainTextResponse(
                     "No article URL was provided.", status_code=400
                 )
-
+            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
+                                                                 "superuser") else "none"
             if depth == "quick":
-                checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                     "superuser") else "none"
                 html_report = run_quick_analysis_from_article(
                     effective_url,
                     include_grok=settings["include_grok_quick"],

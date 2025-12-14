@@ -518,9 +518,38 @@ def run_quick_analysis_from_text(
     raw_text: str,
     source_label: str = "Pasted text",
     include_grok: bool = False,
-    creator_checklist_mode: str = "none",  # <-- add this
+    creator_checklist_mode: str = "none",  # "none" | "pro_quick"
 ) -> str:
-    ...
+    """
+    Quick mode for arbitrary text:
+    - one global scan
+    - no chunk-level deep dive
+    - Grok optional (tier-controlled)
+    """
+
+    transcript_text = (raw_text or "").strip()
+    if not transcript_text:
+        raise ValueError("No text provided for analysis (quick mode).")
+
+    quick_prompt = build_quick_global_prompt(transcript_text)
+    quick_global_report = run_mindpilot_analysis(quick_prompt)
+
+    # Optional Grok enrichment
+    grok_insights = ""
+    if include_grok:
+        label = source_label or "Pasted text"
+        try:
+            grok_insights = run_grok_enrichment(label, quick_global_report)
+        except Exception as e:
+            logging.warning(f"[Quick] Grok enrichment failed: {e}")
+            grok_insights = ""
+
+    # ✅ Always define report_id before calling build_html_report
+    report_id = generate_report_id(
+        source_label=source_label or "Pasted text",
+        source_url=None,
+    )
+
     html = build_html_report(
         source_url=source_label or "Pasted text",
         report_id=report_id,
@@ -528,11 +557,10 @@ def run_quick_analysis_from_text(
         chunk_analyses=[],
         global_report=quick_global_report,
         grok_insights=grok_insights,
-        depth="quick",  # <-- IMPORTANT FIX
-        creator_checklist_mode=creator_checklist_mode,  # <-- pass through
+        depth="quick",  # ✅ important: makes the template behave like quick
+        creator_checklist_mode=creator_checklist_mode,  # ✅ pass through
     )
     return html
-
 
 
 def run_quick_analysis_from_youtube(
@@ -573,6 +601,7 @@ def run_quick_analysis_from_article(
         include_grok=include_grok,
         creator_checklist_mode=creator_checklist_mode,
     )
+
 
 AD_PHRASES = [
     "this video is sponsored by",
