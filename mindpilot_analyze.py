@@ -1337,17 +1337,17 @@ def build_html_report(
 
         if found:
             found.sort(key=lambda x: x[1])
-            sections = {}
+            section_blocks = {}
             for i, (key, idx, heading) in enumerate(found):
                 start = idx
                 end = found[i + 1][1] if i + 1 < len(found) else len(raw)
-                sections[key] = raw[start:end].strip()
+                section_blocks[key] = raw[start:end].strip()
 
-            full_summary = sections.get("full", "")
-            master_map = sections.get("map", "")
-            rationality_profile = sections.get("profile", "")
-            investor_summary = sections.get("investor", "")
-            questions_block = sections.get("questions", "")
+            full_summary = section_blocks.get("full", "")
+            master_map = section_blocks.get("map", "")
+            rationality_profile = section_blocks.get("profile", "")
+            investor_summary = section_blocks.get("investor", "")
+            questions_block = section_blocks.get("questions", "")
 
     # ---------- escape chunk analyses ----------
 
@@ -2979,7 +2979,7 @@ def build_html_report(
     </section>
     """.strip()
 
-    sections.append(creator_checklist_section)
+    html += creator_checklist_section
 
     # ---------- Section-level deep dive ----------
 
