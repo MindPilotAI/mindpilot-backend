@@ -1,6 +1,7 @@
 # mindpilot_api.py  — CLEAN VERSION
 import base64
 import hmac
+import uuid
 import secrets
 import hashlib
 import logging
@@ -431,7 +432,11 @@ def save_report_to_db(
     source_label: Optional[str],
     cfr_html: str,
     social_html: Optional[str],
+    include_grok: bool,
+    cache_key: str,
+    expires_at,
 ) -> None:
+
     """
     Best-effort insert into `reports` table.
     Schema may differ slightly; any failure is logged and swallowed.
@@ -441,14 +446,31 @@ def save_report_to_db(
         return
 
     try:
+        norm_url = normalize_source_url(source_url) if source_url else None
+
         with conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO reports (report_id, mode, depth, source_url, source_label, cfr_html, social_html, created_at, include_grok, expires_on)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, now() %s, %s,)
+                INSERT INTO reports
+                  (id, mode, depth, source_url, source_label, created_at,
+                   cfr_html, social_html, include_grok, cache_key, expires_at)
+                VALUES
+                  (%s, %s, %s, %s, %s, now(), %s, %s, %s, %s, %s)
                 """,
-                (report_id, mode, depth, source_url, source_label, cfr_html, social_html),
+                (
+                    report_id,
+                    (mode or "").lower(),
+                    (depth or "").lower(),
+                    norm_url,
+                    source_label,
+                    cfr_html,
+                    social_html,
+                    bool(include_grok),
+                    cache_key or "",
+                    expires_at,
+                ),
             )
+
     except Exception:
         logging.exception("Failed to save report to Postgres")
     finally:
@@ -466,37 +488,40 @@ def fetch_cached_report_from_db(
     depth: str,
     source_url: str,
     include_grok: bool,
-    max_age_days: int,
 ) -> Optional[dict]:
     """
     Returns dict with keys: report_id, cfr_html, social_html, created_at
-    or None if no fresh cached report exists.
+    or None if no unexpired cached report exists.
 
-    NOTE: this assumes your `reports` table has columns:
-      report_id, mode, depth, source_url, cfr_html, social_html, created_at
-    (which matches your current insert). :contentReference[oaicite:6]{index=6}
+    Uses reports.id, reports.mode, reports.depth, reports.source_url, reports.include_grok, reports.expires_at.
     """
+    if not source_url:
+        return None
+
     conn = get_db_connection()
     if conn is None:
         return None
 
     try:
+        norm_url = normalize_source_url(source_url)
+
         with conn, conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(
                 """
-                SELECT report_id, cfr_html, social_html, created_at
+                SELECT id, cfr_html, social_html, created_at
                 FROM reports
                 WHERE mode = %s
                   AND depth = %s
                   AND source_url = %s
                   AND include_grok = %s
-                  AND expires_on >= CURRENT_DATE
-                ORDER BY created_at DESC LIMIT 1
+                  AND expires_at >= CURRENT_DATE
+                ORDER BY created_at DESC
+                LIMIT 1
                 """,
                 (
                     (mode or "").lower(),
                     (depth or "").lower(),
-                    normalize_source_url(source_url),
+                    norm_url,
                     bool(include_grok),
                 ),
             )
@@ -505,11 +530,8 @@ def fetch_cached_report_from_db(
             if not row:
                 return None
 
-            html = row["cfr_html"]
-            # Optional: strict Grok match check (best done with a real DB column later)
-
             return dict(
-                report_id=row["report_id"],
+                report_id=row["id"],
                 cfr_html=row["cfr_html"],
                 social_html=row["social_html"],
                 created_at=row["created_at"],
@@ -522,6 +544,7 @@ def fetch_cached_report_from_db(
             conn.close()
         except Exception:
             pass
+
 
 
 def load_report_from_db(report_id: str) -> Optional[Dict[str, Any]]:
@@ -707,15 +730,16 @@ def log_usage(
 
     try:
         with conn, conn.cursor() as cur:
+            usage_id = str(uuid.uuid4())
             cur.execute(
                 """
-                INSERT INTO usage_logs
-                    (user_id, ip_hash, source_type, depth, mode, report_id,
-                     tokens_used, success, error_category, error_detail, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s,
+                INSERT INTO usage_logs (id, user_id, ip_hash, source_type, depth, mode, 
+                        report_id, tokens_used, success, error_category, error_detail, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, now())
                 """,
                 (
+                    usage_id,
                     user_id,
                     ip_hash,
                     source_type,
@@ -930,8 +954,24 @@ async def analyze(
     depth = (depth or "full").lower().strip()
     if depth not in ("quick", "full"):
         depth = "full"
+    # -------------------------------------------------
+    # Cache + Grok policy (single source of truth)
+    # -------------------------------------------------
 
+    # Whether Grok is included for THIS request
+    if depth == "quick":
+        include_grok = bool(settings.get("include_grok_quick"))
+    else:
+        include_grok = bool(settings.get("include_grok_full"))
 
+    # Cache expiration policy
+    #  - with Grok: 3 days
+    #  - without Grok: 7 days
+    expires_days = 3 if include_grok else 7
+    expires_at = (datetime.utcnow().date() + timedelta(days=expires_days))
+
+    # Cache key (only for URL-backed sources)
+    cache_key = ""
 
     include_marketing_cta_flag = str(include_marketing_cta or "0").lower() in (
         "1",
@@ -956,7 +996,6 @@ async def analyze(
             depth=depth,
             source_url=cache_source_url,
             include_grok=include_grok_req,
-            max_age_days=0,  # no longer used when expires_on exists; keep arg for signature compatibility
         )
 
         if cached and cached.get("cfr_html"):
@@ -983,6 +1022,8 @@ async def analyze(
             )
 
             raw_bytes = await file.read()
+            plan_slug = (settings.get("plan") or "").lower().strip()
+            is_paid_plan = plan_slug in ("pro", "pro_creator", "pro_full", "pro_plus", "academic", "admin", "superuser")
             checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
 
             if depth == "quick":
@@ -1016,6 +1057,8 @@ async def analyze(
             source_type_for_logs = "youtube"
 
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
+            plan_slug = (settings.get("plan") or "").lower().strip()
+            is_paid_plan = plan_slug in ("pro", "pro_creator", "pro_full", "pro_plus", "academic", "admin", "superuser")
             checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
 
             if depth == "quick":
@@ -1065,6 +1108,8 @@ async def analyze(
                 f"[MindPilot] Running {depth} TEXT analysis (label={source_label_for_id!r})."
             )
             enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
+            plan_slug = (settings.get("plan") or "").lower().strip()
+            is_paid_plan = plan_slug in ("pro", "pro_creator", "pro_full", "pro_plus", "academic", "admin", "superuser")
             checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
 
             if depth == "quick":
@@ -1118,6 +1163,8 @@ async def analyze(
                 return PlainTextResponse(
                     "No article URL was provided.", status_code=400
                 )
+            plan_slug = (settings.get("plan") or "").lower().strip()
+            is_paid_plan = plan_slug in ("pro", "pro_creator", "pro_full", "pro_plus", "academic", "admin", "superuser")
             checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
 
             if depth == "quick":
@@ -1192,6 +1239,10 @@ async def analyze(
                 source_label=source_label_for_db,
                 cfr_html=html_report,
                 social_html=social_html,
+                include_grok=include_grok,
+                cache_key=cache_key,
+                expires_at=expires_at,
+
             )
         except Exception:
             logging.exception("Failed to save report to Postgres")
