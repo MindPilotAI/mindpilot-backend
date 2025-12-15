@@ -64,12 +64,18 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 ##  this gives one knob-board for cost parity and makes later pricing changes trivial.
 
 def resolve_tier_settings(current_user: Optional[dict]) -> dict:
+    """
+    Canonical plan slugs expected:
+      free, pro, pro_plus, academic, admin
+    No-login Preview = current_user is None (treated as free capabilities)
+    """
     plan = (current_user.get("plan") if current_user else "free") or "free"
     plan = plan.lower().strip()
 
+    # --- Admin ---
     if plan in ("admin", "superuser"):
         return dict(
-            plan=plan,
+            plan="admin",
             include_grok_quick=True,
             include_grok_full=True,
             allow_full=True,
@@ -77,21 +83,57 @@ def resolve_tier_settings(current_user: Optional[dict]) -> dict:
             max_chunks_full=999,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
+            cap_quick_per_24h=10_000,
+            cap_full_per_24h=10_000,
         )
 
-    if plan in ("pro", "creator", "pro_creator"):
+    # --- Pro+ Analyst ---
+    if plan in ("pro_plus", "pro+", "proplus", "plus"):
         return dict(
-            plan=plan,
-            include_grok_quick=True,     # key differentiator
+            plan="pro_plus",
+            include_grok_quick=True,
             include_grok_full=True,
             allow_full=True,
-            allow_section_deep_dive=False,   # default OFF (cost), can be Pro+ later
-            max_chunks_full=12,              # or whatever you decide
+            allow_section_deep_dive=True,   # Pro+ can have it
+            max_chunks_full=24,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
+            cap_quick_per_24h=60,
+            cap_full_per_24h=12,
         )
 
-    # free / anon
+    # --- Academic ---
+    # Suggested: keep it serious but cost-disciplined: allow Full, but no Grok by default.
+    if plan in ("academic", "edu", "education", "student"):
+        return dict(
+            plan="academic",
+            include_grok_quick=False,
+            include_grok_full=False,
+            allow_full=True,
+            allow_section_deep_dive=False,
+            max_chunks_full=12,
+            openai_model_quick="gpt-4o-mini",
+            openai_model_full="gpt-4o-mini",
+            cap_quick_per_24h=20,
+            cap_full_per_24h=4,
+        )
+
+    # --- Pro Creator ---
+    if plan in ("pro", "creator", "pro_creator"):
+        return dict(
+            plan="pro",
+            include_grok_quick=True,
+            include_grok_full=True,
+            allow_full=True,
+            allow_section_deep_dive=False,
+            max_chunks_full=12,
+            openai_model_quick="gpt-4o-mini",
+            openai_model_full="gpt-4o-mini",
+            cap_quick_per_24h=30,
+            cap_full_per_24h=6,
+        )
+
+    # --- Free / Preview ---
     return dict(
         plan="free",
         include_grok_quick=False,
@@ -101,8 +143,9 @@ def resolve_tier_settings(current_user: Optional[dict]) -> dict:
         max_chunks_full=0,
         openai_model_quick="gpt-4o-mini",
         openai_model_full="gpt-4o-mini",
+        cap_quick_per_24h=5,
+        cap_full_per_24h=0,
     )
-
 
 # -------------------------------------------------------------------
 # DATABASE CONNECTION
@@ -401,8 +444,8 @@ def save_report_to_db(
         with conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO reports (report_id, mode, depth, source_url, source_label, cfr_html, social_html, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                INSERT INTO reports (report_id, mode, depth, source_url, source_label, cfr_html, social_html, created_at, include_grok, expires_on)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now() %s, %s,)
                 """,
                 (report_id, mode, depth, source_url, source_label, cfr_html, social_html),
             )
@@ -410,6 +453,75 @@ def save_report_to_db(
         logging.exception("Failed to save report to Postgres")
     finally:
         conn.close()
+def normalize_source_url(url: str) -> str:
+    u = (url or "").strip()
+    # basic normalization: drop trailing slash
+    if u.endswith("/"):
+        u = u[:-1]
+    return u
+
+def fetch_cached_report_from_db(
+    *,
+    mode: str,
+    depth: str,
+    source_url: str,
+    include_grok: bool,
+    max_age_days: int,
+) -> Optional[dict]:
+    """
+    Returns dict with keys: report_id, cfr_html, social_html, created_at
+    or None if no fresh cached report exists.
+
+    NOTE: this assumes your `reports` table has columns:
+      report_id, mode, depth, source_url, cfr_html, social_html, created_at
+    (which matches your current insert). :contentReference[oaicite:6]{index=6}
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return None
+
+    try:
+        with conn, conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT report_id, cfr_html, social_html, created_at
+                FROM reports
+                WHERE mode = %s
+                  AND depth = %s
+                  AND source_url = %s
+                  AND include_grok = %s
+                  AND expires_on >= CURRENT_DATE
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (
+                    (mode or "").lower(),
+                    (depth or "").lower(),
+                    normalize_source_url(source_url),
+                    bool(include_grok),
+                ),
+            )
+
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            html = row["cfr_html"]
+            # Optional: strict Grok match check (best done with a real DB column later)
+
+            return dict(
+                report_id=row["report_id"],
+                cfr_html=row["cfr_html"],
+                social_html=row["social_html"],
+                created_at=row["created_at"],
+            )
+    except Exception:
+        logging.exception("fetch_cached_report_from_db failed")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def load_report_from_db(report_id: str) -> Optional[Dict[str, Any]]:
@@ -418,12 +530,13 @@ def load_report_from_db(report_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with conn, conn.cursor() as cur:
+        with conn, conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(
                 """
-                SELECT report_id, mode, depth, source_url, source_label, cfr_html, social_html
+                SELECT id, mode, depth, source_url, source_label, cfr_html, social_html
                 FROM reports
-                WHERE report_id = %s
+                WHERE id = %s
+
                 """,
                 (report_id,),
             )
@@ -431,7 +544,7 @@ def load_report_from_db(report_id: str) -> Optional[Dict[str, Any]]:
             if not row:
                 return None
             return {
-                "report_id": row["report_id"],
+                "report_id": row["id"],
                 "mode": row["mode"],
                 "depth": row["depth"],
                 "source_url": row["source_url"],
@@ -482,6 +595,99 @@ def log_blockage_to_db(
     finally:
         conn.close()
 
+def count_successful_usage_last_24h(
+    *,
+    user_id: Optional[str],
+    ip_hash: Optional[str],
+    depth: str,
+) -> int:
+    """
+    Count successful, generated reports in last 24h.
+    Uses user_id when logged in, otherwise falls back to ip_hash.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        # If DB is down, fail open (don't block). You can flip this later.
+        return 0
+
+    depth = (depth or "").lower().strip()
+
+    try:
+        with conn, conn.cursor() as cur:
+            if user_id:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::int
+                    FROM usage_logs
+                    WHERE user_id = %s
+                      AND success = TRUE
+                      AND depth = %s
+                      AND created_at >= (now() - interval '24 hours')
+                    """,
+                    (user_id, depth),
+                )
+            elif ip_hash:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::int
+                    FROM usage_logs
+                    WHERE ip_hash = %s
+                      AND success = TRUE
+                      AND depth = %s
+                      AND created_at >= (now() - interval '24 hours')
+                    """,
+                    (ip_hash, depth),
+                )
+            else:
+                return 0
+
+            row = cur.fetchone()
+            return int(row[0] or 0)
+    except Exception:
+        logging.exception("count_successful_usage_last_24h failed")
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def enforce_usage_caps_or_raise(
+    *,
+    settings: dict,
+    depth: str,
+    user_id: Optional[str],
+    ip_hash: Optional[str],
+) -> None:
+    """
+    Enforce per-plan caps (rolling 24h). Raises HTTPException(429) if exceeded.
+    """
+    depth = (depth or "full").lower().strip()
+    cap_key = "cap_quick_per_24h" if depth == "quick" else "cap_full_per_24h"
+    cap = int(settings.get(cap_key, 0) or 0)
+
+    # If cap is 0 for this depth, block.
+    if cap <= 0:
+        raise HTTPException(
+            status_code=429,
+            detail="This report depth is not available on your current plan. Please upgrade or use Quick Scan.",
+        )
+
+    used = count_successful_usage_last_24h(user_id=user_id, ip_hash=ip_hash, depth=depth)
+
+    if used >= cap:
+        plan = settings.get("plan", "free")
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Usage cap reached for the last 24 hours.\n\n"
+                f"Plan: {plan}\n"
+                f"Depth: {depth}\n"
+                f"Used: {used} / {cap}\n\n"
+                f"Try again later, or upgrade for higher limits."
+            ),
+        )
 
 def log_usage(
     user_id: Optional[str],
@@ -705,10 +911,16 @@ async def analyze(
     if (
             plan_override
             and os.getenv("MP_ALLOW_PLAN_OVERRIDE", "0") == "1"
-            and plan_override.lower().strip() in {"free", "pro", "admin"}
+            and plan_override.lower().strip() in {"free", "pro", "pro_plus", "academic", "admin"}
     ):
         tier_user = dict(current_user or {})
-        tier_user["plan"] = plan_override.lower().strip()
+        ov = plan_override.lower().strip()
+        # normalize friendly aliases
+        if ov in ("pro+", "proplus", "plus"):
+            ov = "pro_plus"
+        if ov in ("edu", "education", "student"):
+            ov = "academic"
+        tier_user["plan"] = ov
 
     settings = resolve_tier_settings(tier_user)
 
@@ -729,12 +941,37 @@ async def analyze(
     article_title = (article_title or "").strip()
     article_url = (article_url or "").strip() or None
 
+    def cache_lookup_if_available(*, mode: str, depth: str, cache_source_url: str) -> Optional[HTMLResponse]:
+        if not cache_source_url:
+            return None
+
+        include_grok_req = (
+            settings["include_grok_full"] if depth == "full" else settings["include_grok_quick"]
+        )
+
+        cached = fetch_cached_report_from_db(
+            mode=mode.lower(),
+            depth=depth,
+            source_url=cache_source_url,
+            include_grok=include_grok_req,
+            max_age_days=0,  # no longer used when expires_on exists; keep arg for signature compatibility
+        )
+
+        if cached and cached.get("cfr_html"):
+            resp = HTMLResponse(content=cached["cfr_html"], status_code=200)
+            resp.headers["X-MindPilot-Report-ID"] = cached.get("report_id", "") or ""
+            resp.headers["X-MindPilot-Cache-Hit"] = "1"
+            return resp
+
+        return None
+
     source_label_for_id: str = ""
     html_report: Optional[str] = None
 
     try:
         # 1) File upload → document mode
         if file is not None and file.filename:
+            enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
             filename = file.filename
             source_label_for_id = filename
             source_type_for_logs = "document"
@@ -766,6 +1003,12 @@ async def analyze(
         # 2) YouTube mode
         elif mode.lower() == "youtube":
             youtube_url = input_value.strip()
+            # ✅ Cache reuse for viral YouTube URLs (before any LLM calls)
+            cached_resp = cache_lookup_if_available(mode="youtube", depth=depth, cache_source_url=youtube_url)
+            if cached_resp:
+                return cached_resp
+            enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
+
             source_label_for_id = youtube_url
             source_type_for_logs = "youtube"
 
@@ -818,6 +1061,7 @@ async def analyze(
             logging.info(
                 f"[MindPilot] Running {depth} TEXT analysis (label={source_label_for_id!r})."
             )
+            enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
             checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
                                                                  "superuser") else "none"
             if depth == "quick":
@@ -852,6 +1096,12 @@ async def analyze(
         elif mode.lower() == "article":
             url_from_input = input_value.strip()
             effective_url = article_url or url_from_input or None
+            # ✅ Cache reuse for viral articles (before any LLM calls)
+            cached_resp = cache_lookup_if_available(mode="article", depth=depth, cache_source_url=effective_url or "")
+            if cached_resp:
+                return cached_resp
+            enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
+
             article_url = effective_url
 
             source_label_for_id = article_title or (effective_url or "Article")
@@ -897,6 +1147,10 @@ async def analyze(
 
             source_url_for_db = effective_url
             source_label_for_db = source_label_for_id
+
+            include_grok_req = settings["include_grok_full"] if depth == "full" else settings["include_grok_quick"]
+            expires_days = 3 if include_grok_req else 7
+            expires_on = (datetime.utcnow().date() + timedelta(days=expires_days))
 
         else:
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
@@ -956,6 +1210,9 @@ async def analyze(
         response = HTMLResponse(content=html_report, status_code=200)
         response.headers["X-MindPilot-Report-ID"] = report_id
         return response
+    except HTTPException as e:
+        # Cleanly pass through rate limit / plan gating errors (and other deliberate HTTPExceptions)
+        return PlainTextResponse(str(e.detail), status_code=e.status_code)
 
     except ContentBlockedError as e:
         logging.warning("ContentBlockedError in /analyze: %s", e, exc_info=True)
