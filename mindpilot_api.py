@@ -923,6 +923,8 @@ async def analyze(
         tier_user["plan"] = ov
 
     settings = resolve_tier_settings(tier_user)
+    plan_slug = (settings.get("plan") or "").lower().strip()
+    is_paid_plan = plan_slug in ("pro", "pro_creator", "pro_full", "pro_plus", "academic", "admin", "superuser")
 
     # Normalise depth
     depth = (depth or "full").lower().strip()
@@ -981,8 +983,8 @@ async def analyze(
             )
 
             raw_bytes = await file.read()
-            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                 "superuser") else "none"
+            checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
+
             if depth == "quick":
 
                 html_report = run_quick_analysis_from_document(
@@ -995,6 +997,7 @@ async def analyze(
                 html_report = run_full_analysis_from_document(
                     file_bytes=raw_bytes,
                     filename=filename,
+                    creator_checklist_mode=checklist_mode,
                 )
 
             source_url_for_db = None
@@ -1013,8 +1016,8 @@ async def analyze(
             source_type_for_logs = "youtube"
 
             logging.info(f"[MindPilot] Running {depth} YouTube analysis: {youtube_url}")
-            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                 "superuser") else "none"
+            checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
+
             if depth == "quick":
                 html_report = run_quick_analysis_from_youtube(
                     youtube_url,
@@ -1062,8 +1065,8 @@ async def analyze(
                 f"[MindPilot] Running {depth} TEXT analysis (label={source_label_for_id!r})."
             )
             enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
-            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                 "superuser") else "none"
+            checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
+
             if depth == "quick":
 
                 html_report = run_quick_analysis_from_text(
@@ -1115,8 +1118,8 @@ async def analyze(
                 return PlainTextResponse(
                     "No article URL was provided.", status_code=400
                 )
-            checklist_mode = "pro_quick" if settings["plan"] in ("pro", "creator", "pro_creator", "admin",
-                                                                 "superuser") else "none"
+            checklist_mode = ("pro_full" if depth == "full" else "pro_quick") if is_paid_plan else "none"
+
             if depth == "quick":
                 html_report = run_quick_analysis_from_article(
                     effective_url,
