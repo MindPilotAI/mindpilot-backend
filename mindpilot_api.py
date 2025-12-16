@@ -9,6 +9,7 @@ import os
 import re
 import jwt  # PyJWT
 import psycopg2
+import stripe
 from psycopg2.extras import DictCursor
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -63,20 +64,24 @@ SUPERUSER_EMAIL = os.getenv("MP_SUPERUSER_EMAIL")  # optional
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 ##  this gives one knob-board for cost parity and makes later pricing changes trivial.
-
 def resolve_tier_settings(current_user: Optional[dict]) -> dict:
     """
-    Canonical plan slugs expected:
-      free, pro, pro_plus, academic, admin
-    No-login Preview = current_user is None (treated as free capabilities)
-    """
-    plan = (current_user.get("plan") if current_user else "free") or "free"
-    plan = plan.lower().strip()
+    Central tier policy: feature flags + usage caps.
 
-    # --- Admin ---
+    Notes:
+    - "preview" = Tier 0 (no login required). We will assign this when current_user is None.
+    - "free" = logged-in free user (if/when you enable signup on public site).
+    """
+
+    # Tier 0: unauthenticated preview
+    if not current_user:
+        plan = "preview"
+    else:
+        plan = (current_user.get("plan") or "free").lower().strip()
+
     if plan in ("admin", "superuser"):
         return dict(
-            plan="admin",
+            plan=plan,
             include_grok_quick=True,
             include_grok_full=True,
             allow_full=True,
@@ -84,57 +89,78 @@ def resolve_tier_settings(current_user: Optional[dict]) -> dict:
             max_chunks_full=999,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
-            cap_quick_per_24h=10_000,
-            cap_full_per_24h=10_000,
+            # caps
+            max_quick_per_24h=999999,
+            max_full_per_30d=999999,
+            max_requests_per_15m=999999,
         )
 
-    # --- Pro+ Analyst ---
-    if plan in ("pro_plus", "pro+", "proplus", "plus"):
+    if plan in ("pro_plus", "pro+", "plus", "proplus"):
         return dict(
             plan="pro_plus",
             include_grok_quick=True,
             include_grok_full=True,
             allow_full=True,
-            allow_section_deep_dive=True,   # Pro+ can have it
-            max_chunks_full=24,
+            allow_section_deep_dive=True,   # Pro+ unlock
+            max_chunks_full=18,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
-            cap_quick_per_24h=60,
-            cap_full_per_24h=12,
+            # caps
+            max_quick_per_24h=75,
+            max_full_per_30d=40,
+            max_requests_per_15m=60,
         )
 
-    # --- Academic ---
-    # Suggested: keep it serious but cost-disciplined: allow Full, but no Grok by default.
     if plan in ("academic", "edu", "education", "student"):
         return dict(
             plan="academic",
-            include_grok_quick=False,
+            include_grok_quick=False,       # keep costs sane; you can flip later
             include_grok_full=False,
-            allow_full=True,
+            allow_full=True,                # academic can do full (but capped)
             allow_section_deep_dive=False,
-            max_chunks_full=12,
+            max_chunks_full=10,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
-            cap_quick_per_24h=20,
-            cap_full_per_24h=4,
+            # caps
+            max_quick_per_24h=15,
+            max_full_per_30d=10,
+            max_requests_per_15m=30,
         )
 
-    # --- Pro Creator ---
     if plan in ("pro", "creator", "pro_creator"):
         return dict(
-            plan="pro",
-            include_grok_quick=True,
+            plan=plan,
+            include_grok_quick=True,     # key differentiator
             include_grok_full=True,
             allow_full=True,
             allow_section_deep_dive=False,
             max_chunks_full=12,
             openai_model_quick="gpt-4o-mini",
             openai_model_full="gpt-4o-mini",
-            cap_quick_per_24h=30,
-            cap_full_per_24h=6,
+            # caps
+            max_quick_per_24h=25,
+            max_full_per_30d=15,
+            max_requests_per_15m=40,
         )
 
-    # --- Free / Preview ---
+    # Tier 0 preview
+    if plan == "preview":
+        return dict(
+            plan="preview",
+            include_grok_quick=False,
+            include_grok_full=False,
+            allow_full=False,
+            allow_section_deep_dive=False,
+            max_chunks_full=0,
+            openai_model_quick="gpt-4o-mini",
+            openai_model_full="gpt-4o-mini",
+            # caps
+            max_quick_per_24h=1,
+            max_full_per_30d=0,
+            max_requests_per_15m=10,
+        )
+
+    # Logged-in free (Tier 1)
     return dict(
         plan="free",
         include_grok_quick=False,
@@ -144,9 +170,91 @@ def resolve_tier_settings(current_user: Optional[dict]) -> dict:
         max_chunks_full=0,
         openai_model_quick="gpt-4o-mini",
         openai_model_full="gpt-4o-mini",
-        cap_quick_per_24h=5,
-        cap_full_per_24h=0,
+        # caps
+        max_quick_per_24h=3,
+        max_full_per_30d=0,
+        max_requests_per_15m=15,
     )
+# -----------------------
+# STRIPE (v1 minimal)
+# -----------------------
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+MP_APP_BASE_URL = os.getenv("MP_APP_BASE_URL", "https://mind-pilot.ai").rstrip("/")
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+
+def _stripe_price_for_plan(plan: str) -> str:
+    p = (plan or "").lower().strip()
+    if p == "pro":
+        return os.getenv("STRIPE_PRICE_PRO", "")
+    if p == "pro_plus":
+        return os.getenv("STRIPE_PRICE_PRO_PLUS", "")
+    if p == "academic":
+        return os.getenv("STRIPE_PRICE_ACADEMIC", "")
+    return ""
+def _set_user_plan_from_stripe(
+    user_id: str,
+    plan: str,
+    stripe_customer_id: Optional[str] = None,
+    stripe_subscription_id: Optional[str] = None,
+    stripe_status: Optional[str] = None,
+) -> None:
+    conn = get_db_connection()
+    if conn is None:
+        return
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET plan = %s,
+                    stripe_customer_id = COALESCE(%s, stripe_customer_id),
+                    stripe_subscription_id = COALESCE(%s, stripe_subscription_id),
+                    stripe_status = COALESCE(%s, stripe_status),
+                    plan_source = 'stripe',
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (plan, stripe_customer_id, stripe_subscription_id, stripe_status, user_id),
+            )
+    except Exception:
+        logging.exception("Stripe: failed to update user plan")
+    finally:
+        conn.close()
+
+class StripeCheckoutRequest(BaseModel):
+    plan: str  # "pro" | "pro_plus" | "academic"
+
+@app.post("/stripe/create-checkout-session")
+async def stripe_create_checkout_session(
+    payload: StripeCheckoutRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    plan = (payload.plan or "").lower().strip()
+    price_id = _stripe_price_for_plan(plan)
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Unknown plan")
+
+    success_url = f"{MP_APP_BASE_URL}/account.html?stripe=success"
+    cancel_url = f"{MP_APP_BASE_URL}/account.html?stripe=cancel"
+
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        customer_email=current_user.get("email"),
+        client_reference_id=current_user.get("id"),
+        metadata={"mp_user_id": current_user.get("id"), "mp_plan": plan},
+    )
+    return {"url": session.url}
 
 # -------------------------------------------------------------------
 # DATABASE CONNECTION
@@ -423,6 +531,7 @@ def insert_marketing_cta(html: str, report_id: str) -> str:
 # -------------------------------------------------------------------
 # DB HELPERS FOR REPORTS / LOGGING
 # -------------------------------------------------------------------
+from datetime import date  # add near the other datetime imports if not present
 
 def save_report_to_db(
     report_id: str,
@@ -432,49 +541,51 @@ def save_report_to_db(
     source_label: Optional[str],
     cfr_html: str,
     social_html: Optional[str],
-    include_grok: bool,
-    cache_key: str,
-    expires_at,
+    include_grok: bool = False,
+    cache_key: str = "",
+    expires_on: Optional[date] = None,
 ) -> None:
-
     """
     Best-effort insert into `reports` table.
-    Schema may differ slightly; any failure is logged and swallowed.
+    Matches your current schema:
+      reports: id, mode, depth, source_url, source_label, created_at, cfr_html, social_html, include_grok, cache_key, expires_at/expires_on
     """
     conn = get_db_connection()
     if conn is None:
         return
 
     try:
-        norm_url = normalize_source_url(source_url) if source_url else None
-
         with conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO reports
                   (id, mode, depth, source_url, source_label, created_at,
-                   cfr_html, social_html, include_grok, cache_key, expires_at)
+                   cfr_html, social_html, include_grok, cache_key, expires_on)
                 VALUES
-                  (%s, %s, %s, %s, %s, now(), %s, %s, %s, %s, %s)
+                  (%s, %s, %s, %s, %s, now(),
+                   %s, %s, %s, %s, %s)
                 """,
                 (
                     report_id,
                     (mode or "").lower(),
                     (depth or "").lower(),
-                    norm_url,
+                    source_url,
                     source_label,
                     cfr_html,
                     social_html,
                     bool(include_grok),
                     cache_key or "",
-                    expires_at,
+                    expires_on,
                 ),
             )
-
     except Exception:
         logging.exception("Failed to save report to Postgres")
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 def normalize_source_url(url: str) -> str:
     u = (url or "").strip()
     # basic normalization: drop trailing slash
@@ -676,41 +787,135 @@ def count_successful_usage_last_24h(
             pass
 
 
-def enforce_usage_caps_or_raise(
-    *,
-    settings: dict,
-    depth: str,
-    user_id: Optional[str],
-    ip_hash: Optional[str],
-) -> None:
+def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional[str], ip_hash: Optional[str]) -> None:
     """
-    Enforce per-plan caps (rolling 24h). Raises HTTPException(429) if exceeded.
+    Enforces usage caps using usage_logs.
+    Uses a 24h rolling window for quick, and 30d rolling window for full.
+    Raises HTTPException(402) when cap is hit.
     """
+    plan = (settings.get("plan") or "free").lower().strip()
     depth = (depth or "full").lower().strip()
-    cap_key = "cap_quick_per_24h" if depth == "quick" else "cap_full_per_24h"
-    cap = int(settings.get(cap_key, 0) or 0)
+    if depth not in ("quick", "full"):
+        depth = "full"
 
-    # If cap is 0 for this depth, block.
-    if cap <= 0:
-        raise HTTPException(
-            status_code=429,
-            detail="This report depth is not available on your current plan. Please upgrade or use Quick Scan.",
-        )
+    # Admin bypass
+    if plan in ("admin", "superuser"):
+        return
 
-    used = count_successful_usage_last_24h(user_id=user_id, ip_hash=ip_hash, depth=depth)
+    # Default caps (can later move to DB / Stripe metadata)
+    caps = {
+        "free":      {"quick_24h": 5,  "full_30d": 0},
+        "preview":   {"quick_24h": 5,  "full_30d": 0},
+        "pro":       {"quick_24h": 30, "full_30d": 120},  # 6/day ≈ 180/30d; using 120 conservative
+        "pro_creator":{"quick_24h": 30, "full_30d": 120},
+        "pro_full":  {"quick_24h": 30, "full_30d": 120},
+        "pro_plus":  {"quick_24h": 60, "full_30d": 240},
+        "academic":  {"quick_24h": 20, "full_30d": 80},
+    }
 
-    if used >= cap:
-        plan = settings.get("plan", "free")
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"Usage cap reached for the last 24 hours.\n\n"
-                f"Plan: {plan}\n"
-                f"Depth: {depth}\n"
-                f"Used: {used} / {cap}\n\n"
-                f"Try again later, or upgrade for higher limits."
-            ),
-        )
+    cap = caps.get(plan, caps["free"])
+    quick_cap = int(cap["quick_24h"])
+    full_cap_30d = int(cap["full_30d"])
+
+    # Identify key for counting
+    identifier_user = (user_id or "").strip()
+    identifier_ip = (ip_hash or "").strip()
+
+    # If not logged in, enforce on ip_hash (best effort)
+    use_user = bool(identifier_user)
+
+    conn = get_db_connection()
+    if conn is None:
+        return  # don't block if DB unavailable
+
+    try:
+        with conn, conn.cursor(cursor_factory=DictCursor) as cur:
+            # QUICK: last 24 hours
+            if depth == "quick":
+                if quick_cap <= 0:
+                    raise HTTPException(
+                        status_code=402,
+                        detail="Quick Scans are not available on your current plan. Please upgrade to unlock.",
+                    )
+
+                if use_user:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) AS n
+                        FROM usage_logs
+                        WHERE user_id = %s
+                          AND depth = 'quick'
+                          AND success = true
+                          AND created_at >= (now() - interval '24 hours')
+                        """,
+                        (identifier_user,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) AS n
+                        FROM usage_logs
+                        WHERE ip_hash = %s
+                          AND depth = 'quick'
+                          AND success = true
+                          AND created_at >= (now() - interval '24 hours')
+                        """,
+                        (identifier_ip,),
+                    )
+
+                n = int(cur.fetchone()["n"] or 0)
+                if n >= quick_cap:
+                    raise HTTPException(
+                        status_code=402,
+                        detail=f"Usage cap hit: you’ve reached {quick_cap} Quick Scans in the last 24 hours. Upgrade to unlock higher limits.",
+                    )
+                return
+
+            # FULL: last 30 days (rolling)
+            if full_cap_30d <= 0:
+                raise HTTPException(
+                    status_code=402,
+                    detail="Full Cognitive Flight Reports are available on the Pro plan. Run a Quick Scan, or upgrade to unlock full reports.",
+                )
+
+            if use_user:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM usage_logs
+                    WHERE user_id = %s
+                      AND depth = 'full'
+                      AND success = true
+                      AND created_at >= (now() - interval '30 days')
+                    """,
+                    (identifier_user,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM usage_logs
+                    WHERE ip_hash = %s
+                      AND depth = 'full'
+                      AND success = true
+                      AND created_at >= (now() - interval '30 days')
+                    """,
+                    (identifier_ip,),
+                )
+
+            n = int(cur.fetchone()["n"] or 0)
+            if n >= full_cap_30d:
+                raise HTTPException(
+                    status_code=402,
+                    detail="Usage cap hit: you’ve reached your Full Report limit for the last 30 days. Upgrade to unlock higher limits.",
+                )
+            return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def log_usage(
     user_id: Optional[str],
@@ -757,11 +962,148 @@ def log_usage(
     finally:
         conn.close()
 
+def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
+    """
+    Prefer user_id (logged-in). Fallback to ip_hash (preview).
+    Returns (sql_fragment, params_tuple).
+    """
+    if user_id:
+        return "user_id = %s", (user_id,)
+    if ip_hash:
+        return "ip_hash = %s", (ip_hash,)
+    # worst-case: no identity; treat as single shared bucket
+    return "ip_hash IS NULL", ()
+
+
+def _count_usage(*, user_id: Optional[str], ip_hash: Optional[str], depth: str, since_minutes: int) -> int:
+    conn = get_db_connection()
+    if conn is None:
+        return 0
+
+    where_id, id_params = _usage_scope_where(user_id, ip_hash)
+
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM usage_logs
+                WHERE {where_id}
+                  AND success = TRUE
+                  AND depth = %s
+                  AND created_at >= (now() - (%s || ' minutes')::interval)
+                """,
+                (*id_params, (depth or "").lower().strip(), int(since_minutes)),
+            )
+            row = cur.fetchone()
+            return int(row[0] if row else 0)
+    except Exception:
+        logging.exception("Usage count query failed")
+        return 0
+    finally:
+        conn.close()
+
+
+def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional[str], ip_hash: Optional[str]) -> None:
+    """
+    Enforce caps BEFORE running any LLM-heavy work.
+    Uses usage_logs as the source of truth.
+    """
+    plan = (settings.get("plan") or "free").lower().strip()
+    depth = (depth or "quick").lower().strip()
+
+    # Simple burst limiter (all plans)
+    max_15m = int(settings.get("max_requests_per_15m") or 0)
+    if max_15m > 0:
+        used_15m = _count_usage(user_id=user_id, ip_hash=ip_hash, depth="quick", since_minutes=15) \
+                   + _count_usage(user_id=user_id, ip_hash=ip_hash, depth="full", since_minutes=15)
+        if used_15m >= max_15m:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit: too many requests. Please wait a bit and try again. (plan={plan})",
+            )
+
+    if depth == "quick":
+        limit = int(settings.get("max_quick_per_24h") or 0)
+        if limit <= 0:
+            raise HTTPException(status_code=402, detail=f"Quick reports are not enabled for this plan. (plan={plan})")
+        used = _count_usage(user_id=user_id, ip_hash=ip_hash, depth="quick", since_minutes=24 * 60)
+        if used >= limit:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Daily limit reached: {limit} quick reports / 24h on {plan}.",
+            )
+        return
+
+    # depth == "full"
+    limit = int(settings.get("max_full_per_30d") or 0)
+    if limit <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Full reports are not enabled for this plan. (plan={plan})",
+        )
+    used = _count_usage(user_id=user_id, ip_hash=ip_hash, depth="full", since_minutes=30 * 24 * 60)
+    if used >= limit:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Monthly limit reached: {limit} full reports / 30 days on {plan}.",
+        )
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Stripe webhook not configured")
+
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception:
+        logging.exception("Stripe: invalid webhook signature")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    etype = event.get("type", "")
+    obj = event.get("data", {}).get("object", {}) or {}
+
+    if etype == "checkout.session.completed":
+        md = obj.get("metadata", {}) or {}
+        user_id = md.get("mp_user_id") or obj.get("client_reference_id")
+        plan = (md.get("mp_plan") or "").lower().strip()
+
+        _set_user_plan_from_stripe(
+            user_id=user_id,
+            plan=plan,
+            stripe_customer_id=obj.get("customer"),
+            stripe_subscription_id=obj.get("subscription"),
+            stripe_status="active",
+        )
+
+    # Downgrade on cancel
+    if etype == "customer.subscription.deleted":
+        customer_id = obj.get("customer")
+        if customer_id:
+            conn = get_db_connection()
+            try:
+                with conn, conn.cursor(cursor_factory=DictCursor) as cur:
+                    cur.execute("SELECT id FROM users WHERE stripe_customer_id = %s LIMIT 1", (customer_id,))
+                    row = cur.fetchone()
+                if row:
+                    _set_user_plan_from_stripe(user_id=row["id"], plan="free", stripe_status="canceled")
+            except Exception:
+                logging.exception("Stripe: failed downgrade on subscription.deleted")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    return {"ok": True}
+
 
 # -------------------------------------------------------------------
 # FASTAPI APP + CORS
 # -------------------------------------------------------------------
-
 app = FastAPI(title="MindPilot API")
 
 app.add_middleware(
@@ -939,7 +1281,8 @@ async def analyze(
     if (
             plan_override
             and os.getenv("MP_ALLOW_PLAN_OVERRIDE", "0") == "1"
-            and plan_override.lower().strip() in {"free", "pro", "pro_plus", "academic", "admin"}
+            and plan_override.lower().strip() in {"preview", "free", "pro", "pro_plus", "academic", "admin"}
+
     ):
         tier_user = dict(current_user or {})
         ov = plan_override.lower().strip()
@@ -1056,7 +1399,6 @@ async def analyze(
             if cached_resp:
                 return cached_resp
             enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
-
             source_label_for_id = youtube_url
             source_type_for_logs = "youtube"
 
@@ -1154,6 +1496,7 @@ async def analyze(
                 return cached_resp
             enforce_usage_caps_or_raise(settings=settings, depth=depth, user_id=user_id_for_logging, ip_hash=ip_hash)
 
+
             article_url = effective_url
 
             source_label_for_id = article_title or (effective_url or "Article")
@@ -1234,6 +1577,15 @@ async def analyze(
         if social_html:
             REPORT_STORE[f"{report_id}-social"] = social_html
 
+        # --- cache metadata (used for reuse + permalink freshness rules)
+        include_grok_req = settings["include_grok_full"] if depth == "full" else settings["include_grok_quick"]
+        expires_days = 3 if include_grok_req else 7
+        expires_on = (datetime.utcnow().date() + timedelta(days=expires_days))
+
+        # cache_key: strict match on mode/depth/include_grok/source_url (normalized)
+        norm_url = normalize_source_url(source_url_for_db or "")
+        cache_key = f"{(mode or '').lower()}|{(depth or '').lower()}|grok:{int(bool(include_grok_req))}|{norm_url}"
+
         try:
             save_report_to_db(
                 report_id=report_id,
@@ -1243,10 +1595,9 @@ async def analyze(
                 source_label=source_label_for_db,
                 cfr_html=html_report,
                 social_html=social_html,
-                include_grok=include_grok,
+                include_grok=include_grok_req,
                 cache_key=cache_key,
-                expires_at=expires_at,
-
+                expires_on=expires_on,
             )
         except Exception:
             logging.exception("Failed to save report to Postgres")
@@ -1351,6 +1702,66 @@ async def analyze(
             status_code=500,
         )
 
+from fastapi.responses import JSONResponse
+
+def fetch_my_reports_from_db(user_id: str, limit: int = 100) -> list[dict]:
+    conn = get_db_connection()
+    if conn is None:
+        return []
+
+    try:
+        with conn, conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    r.id AS report_id,
+                    r.mode,
+                    r.depth,
+                    r.source_label,
+                    r.source_url,
+                    r.created_at
+                FROM reports r
+                JOIN (
+                    SELECT report_id, MAX(created_at) AS last_run
+                    FROM usage_logs
+                    WHERE user_id = %s AND success = TRUE
+                    GROUP BY report_id
+                ) u
+                ON u.report_id = r.id
+                ORDER BY u.last_run DESC
+                LIMIT %s
+                """,
+                (user_id, int(limit)),
+            )
+            rows = cur.fetchall() or []
+            return [
+                {
+                    "report_id": row["report_id"],
+                    "mode": row["mode"],
+                    "depth": row["depth"],
+                    "source_label": row["source_label"],
+                    "source_url": row["source_url"],
+                    "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                }
+                for row in rows
+            ]
+    except Exception:
+        logging.exception("fetch_my_reports_from_db failed")
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/my/reports")
+async def api_my_reports(current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    items = fetch_my_reports_from_db(current_user["id"], limit=200)
+    return JSONResponse({"items": items})
 
 # -------------------------------------------------------------------
 # REPORT RETRIEVAL ROUTES
