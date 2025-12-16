@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.security import OAuth2PasswordBearer
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 
 from mindpilot_engine import (
@@ -399,8 +399,13 @@ class SignupRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str  # matches frontend field name
+    email: str
     password: str
+
+
+    class Config:
+        allow_population_by_field_name = True
+
 
 
 def get_current_user_optional(request: Request) -> Optional[Dict[str, Any]]:
@@ -1174,11 +1179,27 @@ async def signup(payload: SignupRequest):
 
 @app.post("/login")
 async def login(payload: LoginRequest):
-    user = get_user_by_email(payload.username)
+    email = (payload.email or "").strip()
+    user = get_user_by_email(email)
+
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    if not verify_password(payload.password, user["password_hash"]):
+    raw_password = payload.password or ""
+    pw_bytes = raw_password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+    safe_password = pw_bytes.decode("utf-8", errors="ignore")
+
+    raw_password = payload.password or ""
+    pw_bytes = raw_password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+    safe_password = pw_bytes.decode("utf-8", errors="ignore")
+
+    if not verify_password(safe_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
     if not user["is_active"]:
