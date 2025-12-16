@@ -227,6 +227,13 @@ def _set_user_plan_from_stripe(
 class StripeCheckoutRequest(BaseModel):
     plan: str  # "pro" | "pro_plus" | "academic"
 
+logging.info("Stripe config check:")
+logging.info(f"  STRIPE_SECRET_KEY set: {bool(STRIPE_SECRET_KEY)}")
+logging.info(f"  STRIPE_PRICE_PRO: {os.getenv('STRIPE_PRICE_PRO')}")
+logging.info(f"  STRIPE_PRICE_PRO_PLUS: {os.getenv('STRIPE_PRICE_PRO_PLUS')}")
+logging.info(f"  STRIPE_PRICE_ACADEMIC: {os.getenv('STRIPE_PRICE_ACADEMIC')}")
+
+
 # -------------------------------------------------------------------
 # DATABASE CONNECTION
 # -------------------------------------------------------------------
