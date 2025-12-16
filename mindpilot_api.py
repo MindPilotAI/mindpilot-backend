@@ -227,35 +227,6 @@ def _set_user_plan_from_stripe(
 class StripeCheckoutRequest(BaseModel):
     plan: str  # "pro" | "pro_plus" | "academic"
 
-@app.post("/stripe/create-checkout-session")
-async def stripe_create_checkout_session(
-    payload: StripeCheckoutRequest,
-    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
-):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    if not STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
-
-    plan = (payload.plan or "").lower().strip()
-    price_id = _stripe_price_for_plan(plan)
-    if not price_id:
-        raise HTTPException(status_code=400, detail="Unknown plan")
-
-    success_url = f"{MP_APP_BASE_URL}/account.html?stripe=success"
-    cancel_url = f"{MP_APP_BASE_URL}/account.html?stripe=cancel"
-
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        customer_email=current_user.get("email"),
-        client_reference_id=current_user.get("id"),
-        metadata={"mp_user_id": current_user.get("id"), "mp_plan": plan},
-    )
-    return {"url": session.url}
-
 # -------------------------------------------------------------------
 # DATABASE CONNECTION
 # -------------------------------------------------------------------
@@ -1049,6 +1020,54 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
             detail=f"Monthly limit reached: {limit} full reports / 30 days on {plan}.",
         )
 
+
+# -------------------------------------------------------------------
+# FASTAPI APP + CORS
+# -------------------------------------------------------------------
+app = FastAPI(title="MindPilot API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # you can narrow later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "X-MindPilot-Report-ID",
+        "X-MindPilot-Cache-Hit",
+    ],
+)
+
+
+@app.post("/stripe/create-checkout-session")
+async def stripe_create_checkout_session(
+    payload: StripeCheckoutRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    plan = (payload.plan or "").lower().strip()
+    price_id = _stripe_price_for_plan(plan)
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Unknown plan")
+
+    success_url = f"{MP_APP_BASE_URL}/account.html?stripe=success"
+    cancel_url = f"{MP_APP_BASE_URL}/account.html?stripe=cancel"
+
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        customer_email=current_user.get("email"),
+        client_reference_id=current_user.get("id"),
+        metadata={"mp_user_id": current_user.get("id"), "mp_plan": plan},
+    )
+    return {"url": session.url}
+
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
     if not STRIPE_WEBHOOK_SECRET:
@@ -1100,23 +1119,6 @@ async def stripe_webhook(request: Request):
 
     return {"ok": True}
 
-
-# -------------------------------------------------------------------
-# FASTAPI APP + CORS
-# -------------------------------------------------------------------
-app = FastAPI(title="MindPilot API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # you can narrow later
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=[
-        "X-MindPilot-Report-ID",
-        "X-MindPilot-Cache-Hit",
-    ],
-)
 
 
 # -------------------------------------------------------------------
