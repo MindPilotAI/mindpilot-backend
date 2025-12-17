@@ -1038,17 +1038,27 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
 # -------------------------------------------------------------------
 app = FastAPI(title="MindPilot API")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+ALLOWED_ORIGINS = [
+    "https://mind-pilot.ai",
+    "https://www.mind-pilot.ai",
+    # optional local dev:
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can narrow later
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,  # we're using Bearer tokens, not cookies
     allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=[
-        "X-MindPilot-Report-ID",
-        "X-MindPilot-Cache-Hit",
-    ],
+    allow_headers=["*"],      # must include Authorization
+    expose_headers=["X-MindPilot-Report-ID"],
 )
+
 
 
 @app.post("/stripe/create-checkout-session")
