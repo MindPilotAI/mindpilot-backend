@@ -1463,9 +1463,10 @@ def build_html_report(
             # Pull severity "(High|Medium|Low)" out of the tail if present
             # Allow an optional period after the closing parenthesis, e.g. "(High)."
             severity = ""
-            m_sev = re.search(r"\((High|Medium|Low)\)\.?\s*$", desc)
+            m_sev = re.search(r"\((High|Medium|Med|Low)\)\.?\s*$", desc)
             if m_sev:
-                severity = m_sev.group(1)
+                sev_raw = (m_sev.group(1) or "").strip()
+                severity = "Medium" if sev_raw.lower() == "med" else sev_raw
                 # Trim the "(High)" off the description
                 desc = desc[: m_sev.start()].rstrip(" .-")
 
@@ -1718,7 +1719,10 @@ def build_html_report(
 
     global_report_clean = _strip_internal_subheadings(global_report or "")
     creator_checklist_html = ""
-    if depth == "quick" and creator_checklist_mode == "pro_quick":
+
+    # ✅ Unlock checklist for paid plans in BOTH quick and full
+    # We reuse the same checklist builder for now (stable UI > perfection).
+    if creator_checklist_mode in ("pro_quick", "pro_full"):
         creator_checklist_html = build_pro_quick_creator_checklist_html(
             master_map=master_map,
             rationality_profile=rationality_profile,

@@ -191,10 +191,12 @@ def run_analysis_from_transcript(
     source_label: str = "",
     youtube_url: str | None = None,
     video_id: str | None = None,
-    include_grok: bool = True,
-    allow_section_deep_dive: bool = True,
+    include_grok: bool = False,
+    allow_section_deep_dive: bool = False,
     max_chunks: int | None = None,
+    creator_checklist_mode: str = "none",  # "none" | "pro_quick" | "pro_full"
 ) -> str:
+
     """
     Core engine (updated to the new plan):
     - Full Creator Report can run as a single-pass global analysis (no chunk cards)
@@ -258,6 +260,7 @@ def run_analysis_from_transcript(
         global_report=global_report,
         grok_insights=grok_insights,
         depth=depth_label,
+        creator_checklist_mode=creator_checklist_mode,
     )
 
     return final_html
