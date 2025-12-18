@@ -919,17 +919,21 @@ def log_usage(
     if conn is None:
         return
 
+    cur = None
     try:
-        with conn, conn.cursor() as cur:
-            # DB requires a NOT NULL bigint id (no default), so generate one here.
-            usage_id = int(datetime.utcnow().timestamp() * 1000000)
+        cur = conn.cursor()
+
+        # Your DB requires usage_logs.id NOT NULL (bigint) with no default
+        usage_id = int(datetime.utcnow().timestamp() * 1000000)
+
         cur.execute(
             """
             INSERT INTO usage_logs
-            (id, user_id_text, ip_hash, source_type, depth, mode,
-             report_id, tokens_used, success, error_category, error_detail, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, now())
+              (id, user_id_text, ip_hash, source_type, depth, mode,
+               report_id, tokens_used, success, error_category, error_detail, created_at)
+            VALUES
+              (%s, %s, %s, %s, %s, %s,
+               %s, %s, %s, %s, %s, now())
             """,
             (
                 usage_id,
@@ -946,13 +950,24 @@ def log_usage(
             ),
         )
 
+        conn.commit()
     except Exception:
         logging.exception("Failed to log usage")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
+        try:
+            if cur is not None:
+                cur.close()
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
             pass
+
 
 def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
     """
