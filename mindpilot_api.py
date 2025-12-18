@@ -921,29 +921,27 @@ def log_usage(
 
     try:
         with conn, conn.cursor() as cur:
-            usage_id = str(uuid.uuid4())
-            cur.execute(
-                """
-                INSERT INTO usage_logs
-                (id, user_id_text, ip_hash, source_type, depth, mode, report_id,
-                 tokens_used, success, error_category, error_detail, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, now())
-                """,
-                (
-                    usage_id,
-                    user_id_text,
-                    ip_hash,
-                    source_type,
-                    (depth or "").lower().strip(),
-                    (mode or "").lower().strip(),
-                    report_id,
-                    tokens_used,
-                    bool(success),
-                    error_category,
-                    error_detail,
-                ),
-            )
+          ##  usage_id = str(uuid.uuid4())
+          cur.execute(
+              """
+              INSERT INTO usage_logs (user_id_text, ip_hash, source_type, depth, mode,
+                                      report_id, tokens_used, success, error_category, error_detail, created_at)
+              VALUES (%s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, now())
+              """,
+              (
+                  user_id_text,
+                  ip_hash,
+                  source_type,
+                  (depth or "").lower().strip(),
+                  (mode or "").lower().strip(),
+                  report_id,
+                  tokens_used,
+                  bool(success),
+                  error_category,
+                  error_detail,
+              ),
+          )
 
     except Exception:
         logging.exception("Failed to log usage")
@@ -952,8 +950,6 @@ def log_usage(
             conn.close()
         except Exception:
             pass
-
-
 
 def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
     """
@@ -966,7 +962,6 @@ def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
         return "ip_hash = %s", (ip_hash,)
     # worst-case: no identity; treat as single shared bucket
     return "ip_hash IS NULL", ()
-
 
 def _count_usage(*, user_id: Optional[str], ip_hash: Optional[str], depth: str, since_minutes: int) -> int:
     conn = get_db_connection()
@@ -993,7 +988,6 @@ def _count_usage(*, user_id: Optional[str], ip_hash: Optional[str], depth: str, 
         return 0
     finally:
         conn.close()
-
 
 def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional[str], ip_hash: Optional[str]) -> None:
     """
@@ -1040,7 +1034,6 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
             detail=f"Monthly limit reached: {limit} full reports / 30 days on {plan}.",
         )
 
-
 # -------------------------------------------------------------------
 # FASTAPI APP + CORS
 # -------------------------------------------------------------------
@@ -1066,7 +1059,6 @@ app.add_middleware(
     allow_headers=["*"],      # must include Authorization
     expose_headers=["X-MindPilot-Report-ID"],
 )
-
 
 @app.post("/stripe/create-checkout-session")
 async def stripe_create_checkout_session(
@@ -1147,8 +1139,6 @@ async def stripe_webhook(request: Request):
                     pass
 
     return {"ok": True}
-
-
 
 # -------------------------------------------------------------------
 # AUTH ROUTES
