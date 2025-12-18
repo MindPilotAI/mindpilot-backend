@@ -514,7 +514,7 @@ def insert_marketing_cta(html: str, report_id: str) -> str:
 # -------------------------------------------------------------------
 # DB HELPERS FOR REPORTS / LOGGING
 # -------------------------------------------------------------------
-from datetime import date  # add near the other datetime imports if not present
+from datetime import date  # (keep this import if you already have it)
 
 def save_report_to_db(
     report_id: str,
@@ -526,12 +526,14 @@ def save_report_to_db(
     social_html: Optional[str],
     include_grok: bool = False,
     cache_key: str = "",
-    expires_on: Optional[date] = None,
+    expires_at: Optional[date] = None,
 ) -> None:
     """
     Best-effort insert into `reports` table.
-    Matches your current schema:
-      reports: id, mode, depth, source_url, source_label, created_at, cfr_html, social_html, include_grok, cache_key, expires_at/expires_on
+
+    IMPORTANT:
+    - We use `expires_at` (not `expires_on`) because fetch_cached_report_from_db
+      filters on `expires_at >= CURRENT_DATE`.
     """
     conn = get_db_connection()
     if conn is None:
@@ -543,7 +545,7 @@ def save_report_to_db(
                 """
                 INSERT INTO reports
                   (id, mode, depth, source_url, source_label, created_at,
-                   cfr_html, social_html, include_grok, cache_key, expires_on)
+                   cfr_html, social_html, include_grok, cache_key, expires_at)
                 VALUES
                   (%s, %s, %s, %s, %s, now(),
                    %s, %s, %s, %s, %s)
@@ -558,7 +560,7 @@ def save_report_to_db(
                     social_html,
                     bool(include_grok),
                     cache_key or "",
-                    expires_on,
+                    expires_at,
                 ),
             )
     except Exception:
@@ -736,7 +738,7 @@ def count_successful_usage_last_24h(
                     """
                     SELECT COUNT(*)::int
                     FROM usage_logs
-                    WHERE user_id = %s
+                    WHERE user_id_text = %s
                       AND success = TRUE
                       AND depth = %s
                       AND created_at >= (now() - interval '24 hours')
@@ -826,7 +828,7 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
                         """
                         SELECT COUNT(*) AS n
                         FROM usage_logs
-                        WHERE user_id = %s
+                        WHERE user_id_text = %s
                           AND depth = 'quick'
                           AND success = true
                           AND created_at >= (now() - interval '24 hours')
@@ -866,7 +868,7 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
                     """
                     SELECT COUNT(*) AS n
                     FROM usage_logs
-                    WHERE user_id = %s
+                    WHERE user_id_text = %s
                       AND depth = 'full'
                       AND success = true
                       AND created_at >= (now() - interval '30 days')
@@ -901,7 +903,8 @@ def enforce_usage_caps_or_raise(*, settings: dict, depth: str, user_id: Optional
 
 
 def log_usage(
-    user_id: Optional[str],
+    *,
+    user_id_text: Optional[str],
     ip_hash: Optional[str],
     source_type: Optional[str],
     depth: str,
@@ -921,29 +924,36 @@ def log_usage(
             usage_id = str(uuid.uuid4())
             cur.execute(
                 """
-                INSERT INTO usage_logs (id, user_id, ip_hash, source_type, depth, mode, 
-                        report_id, tokens_used, success, error_category, error_detail, created_at)
+                INSERT INTO usage_logs
+                (id, user_id_text, ip_hash, source_type, depth, mode, report_id,
+                 tokens_used, success, error_category, error_detail, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, now())
                 """,
                 (
                     usage_id,
-                    user_id,
+                    user_id_text,
                     ip_hash,
                     source_type,
-                    depth,
-                    mode,
+                    (depth or "").lower().strip(),
+                    (mode or "").lower().strip(),
                     report_id,
                     tokens_used,
-                    success,
+                    bool(success),
                     error_category,
                     error_detail,
                 ),
             )
+
     except Exception:
         logging.exception("Failed to log usage")
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 
 def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
     """
@@ -951,7 +961,7 @@ def _usage_scope_where(user_id: Optional[str], ip_hash: Optional[str]):
     Returns (sql_fragment, params_tuple).
     """
     if user_id:
-        return "user_id = %s", (user_id,)
+        return "user_id_text = %s", (user_id,)
     if ip_hash:
         return "ip_hash = %s", (ip_hash,)
     # worst-case: no identity; treat as single shared bucket
@@ -962,9 +972,7 @@ def _count_usage(*, user_id: Optional[str], ip_hash: Optional[str], depth: str, 
     conn = get_db_connection()
     if conn is None:
         return 0
-
     where_id, id_params = _usage_scope_where(user_id, ip_hash)
-
     try:
         with conn, conn.cursor() as cur:
             cur.execute(
@@ -1586,7 +1594,7 @@ async def analyze(
 
             include_grok_req = settings["include_grok_full"] if depth == "full" else settings["include_grok_quick"]
             expires_days = 3 if include_grok_req else 7
-            expires_on = (datetime.utcnow().date() + timedelta(days=expires_days))
+            expires_at = (datetime.utcnow().date() + timedelta(days=expires_days))
 
         else:
             return PlainTextResponse(f"Unsupported mode: {mode}", status_code=400)
@@ -1619,7 +1627,7 @@ async def analyze(
         # --- cache metadata (used for reuse + permalink freshness rules)
         include_grok_req = settings["include_grok_full"] if depth == "full" else settings["include_grok_quick"]
         expires_days = 3 if include_grok_req else 7
-        expires_on = (datetime.utcnow().date() + timedelta(days=expires_days))
+        expires_at = (datetime.utcnow().date() + timedelta(days=expires_days))
 
         # cache_key: strict match on mode/depth/include_grok/source_url (normalized)
         norm_url = normalize_source_url(source_url_for_db or "")
@@ -1636,14 +1644,14 @@ async def analyze(
                 social_html=social_html,
                 include_grok=include_grok_req,
                 cache_key=cache_key,
-                expires_on=expires_on,
+                expires_at=expires_at,
             )
         except Exception:
             logging.exception("Failed to save report to Postgres")
 
         try:
             log_usage(
-                user_id=user_id_for_logging,
+                user_id_text=user_id_for_logging,
                 ip_hash=ip_hash,
                 source_type=source_type_for_logs if "source_type_for_logs" in locals() else None,
                 depth=depth,
@@ -1763,7 +1771,7 @@ def fetch_my_reports_from_db(user_id: str, limit: int = 100) -> list[dict]:
                 JOIN (
                     SELECT report_id, MAX(created_at) AS last_run
                     FROM usage_logs
-                    WHERE user_id = %s AND success = TRUE
+                    WHERE user_id_text = %s AND success = TRUE
                     GROUP BY report_id
                 ) u
                 ON u.report_id = r.id
@@ -1891,8 +1899,8 @@ async def my_reports(
                     FROM usage_logs u
                     LEFT JOIN reports r
                       ON r.id = u.report_id
-                    WHERE u.user_id = %s
-                      AND (u.success IS TRUE OR u.success = 't')
+                    WHERE u.user_id_text = %s
+                      AND (u.success IS TRUE OR u.success = 'TRUE')
                     GROUP BY
                       u.report_id, r.mode, r.depth, r.source_url, r.source_label, r.created_at, r.include_grok
                     ORDER BY last_run_at DESC
@@ -1909,8 +1917,8 @@ async def my_reports(
                       report_id,
                       MAX(created_at) AS last_run_at
                     FROM usage_logs
-                    WHERE user_id = %s
-                      AND (success IS TRUE OR success = 't')
+                    WHERE user_id_text = %s
+                      AND (success IS TRUE OR success = 'TRUE')
                     GROUP BY report_id
                     ORDER BY last_run_at DESC
                     LIMIT 200
