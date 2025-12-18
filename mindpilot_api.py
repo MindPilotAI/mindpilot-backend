@@ -921,27 +921,30 @@ def log_usage(
 
     try:
         with conn, conn.cursor() as cur:
-          ##  usage_id = str(uuid.uuid4())
-          cur.execute(
-              """
-              INSERT INTO usage_logs (user_id_text, ip_hash, source_type, depth, mode,
-                                      report_id, tokens_used, success, error_category, error_detail, created_at)
-              VALUES (%s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, now())
-              """,
-              (
-                  user_id_text,
-                  ip_hash,
-                  source_type,
-                  (depth or "").lower().strip(),
-                  (mode or "").lower().strip(),
-                  report_id,
-                  tokens_used,
-                  bool(success),
-                  error_category,
-                  error_detail,
-              ),
-          )
+            # DB requires a NOT NULL bigint id (no default), so generate one here.
+            usage_id = int(datetime.utcnow().timestamp() * 1000000)
+        cur.execute(
+            """
+            INSERT INTO usage_logs
+            (id, user_id_text, ip_hash, source_type, depth, mode,
+             report_id, tokens_used, success, error_category, error_detail, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, now())
+            """,
+            (
+                usage_id,
+                user_id_text,
+                ip_hash,
+                source_type,
+                (depth or "").lower().strip(),
+                (mode or "").lower().strip(),
+                report_id,
+                tokens_used,
+                bool(success),
+                error_category,
+                error_detail,
+            ),
+        )
 
     except Exception:
         logging.exception("Failed to log usage")
