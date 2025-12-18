@@ -1060,7 +1060,6 @@ app.add_middleware(
 )
 
 
-
 @app.post("/stripe/create-checkout-session")
 async def stripe_create_checkout_session(
     payload: StripeCheckoutRequest,
@@ -1830,3 +1829,104 @@ async def get_social(report_id: str):
         return HTMLResponse(db_row["social_html"])
 
     raise HTTPException(status_code=404, detail="Social snapshot not found")
+
+# -------------------------------------------------------------------
+# MY REPORTS (per-user list)
+# -------------------------------------------------------------------
+
+@app.get("/my/reports")
+async def my_reports(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    conn = get_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    def _rows_to_payload(rows):
+        items = []
+        for r in rows:
+            report_id = r.get("report_id")
+            if not report_id:
+                continue
+            items.append(
+                {
+                    "report_id": report_id,
+                    "mode": r.get("mode"),
+                    "depth": r.get("depth"),
+                    "source_label": r.get("source_label"),
+                    "source_url": r.get("source_url"),
+                    "include_grok": r.get("include_grok"),
+                    "created_at": (r.get("created_at").isoformat() if r.get("created_at") else None),
+                    "last_run_at": (r.get("last_run_at").isoformat() if r.get("last_run_at") else None),
+                    # use Netlify-proxied share-safe URLs
+                    "report_url": f"/reports/{report_id}",
+                    "social_url": f"/social/{report_id}",
+                }
+            )
+        return {"items": items}
+
+    try:
+        with conn, conn.cursor(cursor_factory=DictCursor) as cur:
+            # Try expires_on first (some versions of your code used it),
+            # then fall back to expires_at (your current DB notes mention expires_at).
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                      u.report_id AS report_id,
+                      MAX(u.created_at) AS last_run_at,
+                      r.mode,
+                      r.depth,
+                      r.source_url,
+                      r.source_label,
+                      r.created_at,
+                      r.include_grok
+                    FROM usage_logs u
+                    LEFT JOIN reports r
+                      ON r.id = u.report_id
+                    WHERE u.user_id = %s
+                      AND (u.success IS TRUE OR u.success = 't')
+                    GROUP BY
+                      u.report_id, r.mode, r.depth, r.source_url, r.source_label, r.created_at, r.include_grok
+                    ORDER BY last_run_at DESC
+                    LIMIT 200
+                    """,
+                    (user_id,),
+                )
+            except Exception:
+                # If something about the schema differs, still try to return IDs only.
+                logging.exception("my_reports query failed; falling back to IDs-only list")
+                cur.execute(
+                    """
+                    SELECT
+                      report_id,
+                      MAX(created_at) AS last_run_at
+                    FROM usage_logs
+                    WHERE user_id = %s
+                      AND (success IS TRUE OR success = 't')
+                    GROUP BY report_id
+                    ORDER BY last_run_at DESC
+                    LIMIT 200
+                    """,
+                    (user_id,),
+                )
+
+            rows = cur.fetchall() or []
+            return _rows_to_payload(rows)
+
+    except Exception:
+        logging.exception("Failed to load my reports")
+        raise HTTPException(status_code=500, detail="Failed to load reports")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
